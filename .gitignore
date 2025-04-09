@@ -1,0 +1,10 @@
+**/.DS_Store
+**/__pycache__
+model_data
+data
+build
+log
+install
+logs
+**/.idea
+**/*.egg-info
