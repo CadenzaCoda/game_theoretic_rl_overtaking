@@ -147,7 +147,9 @@ class MPCCConvWrapper:
         success = self.controller.step(_state, reference=R, parameters=P)
         return np.array([_state.u.u_a, _state.u.u_steer]), {'success': success}
 
-    def step(self, vehicle_state, **kwargs) -> Tuple[np.ndarray, dict]:
+    def step(self, vehicle_state, index=None, **kwargs) -> Tuple[np.ndarray, dict]:
+        if index is not None:
+            vehicle_state = vehicle_state[index]
         return self._step_mpcc_conv(vehicle_state)
 
     def get_prediction(self):

@@ -59,7 +59,7 @@ class LMPCWrapper:
                                                pacejka_b_rear=5.0,
                                                pacejka_c_front=2.28,
                                                pacejka_c_rear=2.28,
-                                               code_gen=True,
+                                               code_gen=False,
                                                jit=True,
                                                opt_flag='O3')
         self.dyn_model = CasadiDynamicCLBicycle(t0, dynamics_config, track=track_obj)
@@ -274,10 +274,14 @@ class LMPCWrapper:
         du_ws = np.zeros((N, self.dyn_model.n_u))
         self.lmpc_controller.set_warm_start(u_ws, du_ws)
 
-    def step(self, vehicle_state, terminated, lap_no, **kwargs):
+    def step(self, vehicle_state, terminated, lap_no, index=None, **kwargs):
         """
         Use VehicleState to step directly. Closer to how the simulation script works.
         """
+        if index is not None:
+            vehicle_state = vehicle_state[index]
+            lap_no = lap_no[index]
+            terminated = terminated[index]
         if self.active_controller == 'pid':
             info = self._step_pid(vehicle_state)
         elif self.active_controller == 'lmpc':

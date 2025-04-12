@@ -1,5 +1,5 @@
 # cs282_project
-Game-Theoretic Multi-Agent Reinforcement Learning for Autonomous Racing Overtaking Strategies (CS 282A 2025 Spring final project) 
+Game-Theoretic Multi-Agent Reinforcement Learning for Autonomous Racing Overtaking Strategies (CS 282A 2025 Spring final project)
 
 
 
@@ -61,8 +61,8 @@ Before running any experiment:
 
 - Configure the model hyperparameters in:
 
-  - `config/safeAC.yaml` (for **full-state feedback** experiments)
-  - `config/visionSafeAC.yaml` (for **image feedback** experiments)
+    - `config/safeAC.yaml` (for **full-state feedback** experiments)
+    - `config/visionSafeAC.yaml` (for **image feedback** experiments)
 
 - If running **image feedback experiments**, start the CARLA server. For better reliability, run CARLA with the following flags:
 
