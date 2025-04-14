@@ -29,7 +29,8 @@ def main(seed=0):
     
     # Create controllers for both vehicles
     # ego_controller = LMPCWrapper(dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
-    controller_type = rng.choice([PIDWrapper, MPCCConvWrapper, LMPCWrapper], size=2, replace=False)
+    # controller_type = rng.choice([PIDWrapper, MPCCConvWrapper, LMPCWrapper], size=2, replace=False)
+    controller_type = [MPCCConvWrapper, LMPCWrapper]
     ego_controller = controller_type[0](dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
     opponent_controller = controller_type[1](dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
     
@@ -103,9 +104,12 @@ def main(seed=0):
             logger.info(f"Success rate: {success_count}/{episode_count}")
             
             # Reset the environment and controllers
-            ob, info = env.reset(seed=seed, options={'spawning': 'fixed'})
-            controller_type = rng.choice([PIDWrapper, MPCCConvWrapper, LMPCWrapper], size=2, replace=False)
+            # ob, info = env.reset(seed=seed, options={'spawning': 'fixed'})
+            ob, info = env.reset()
+            controller_type = [MPCCConvWrapper, LMPCWrapper]
+            # controller_type = rng.choice([PIDWrapper, MPCCConvWrapper, LMPCWrapper], size=2, replace=False)
             ego_controller = controller_type[0](dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
+            env.unwrapped.bind_controller(ego_controller)
             opponent_controller = controller_type[1](dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
 
             ego_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][0]})

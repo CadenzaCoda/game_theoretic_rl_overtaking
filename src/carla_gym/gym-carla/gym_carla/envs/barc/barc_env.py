@@ -391,7 +391,7 @@ class MultiBarcEnv(gym.Env):
         observation_space = dict(
             gps=spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
             velocity=spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
-            state=spaces.Box(low=-np.inf, high=np.inf, shape=(2, 9), dtype=np.float32),  # Fixed to 2 vehicles
+            state=spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 9,), dtype=np.float32),  # Fixed to 2 vehicles
         )
         if self.enable_camera:
             from gym_carla.envs.barc.cameras.carla_bridge import CarlaConnector
@@ -472,7 +472,7 @@ class MultiBarcEnv(gym.Env):
             self.visualizer.reset()
         elif self.visualizer is not None:
             self.visualizer.close()
-        if options.get('spawning') == 'fixed':
+        if options is not None and options.get('spawning') == 'fixed':
             logger.debug("Respawning at fixed location.")
 
             # Initialize exactly 2 vehicles with fixed spacing
@@ -483,11 +483,12 @@ class MultiBarcEnv(gym.Env):
                                           w=BodyAngularVelocity(w_psi=0)) for i in range(2)]
         else:
             # Initialize exactly 2 vehicles with random positions
+            _s = np.random.uniform(0.1, self.track_obj.track_length - 4)
             self.sim_state = [VehicleState(t=0.0,
-                                          p=ParametricPose(s=np.random.uniform(0.1, self.track_obj.track_length - 3) + 2 * i,
+                                          p=ParametricPose(s=_s + 2 * i,
                                                            x_tran=np.random.uniform(
-                                                               -self.track_obj.half_width - self.track_obj.slack,
-                                                               self.track_obj.half_width + self.track_obj.slack),
+                                                               -self.track_obj.half_width / 2,
+                                                               self.track_obj.half_width / 2),
                                                            e_psi=np.random.uniform(-np.pi / 6, np.pi / 6), ),
                                           v=BodyLinearVelocity(v_long=np.random.uniform(0.5, 2), v_tran=0),
                                           w=BodyAngularVelocity(w_psi=0)) for i in range(2)]
@@ -578,7 +579,7 @@ class MultiBarcEnv(gym.Env):
                                  dtype=np.float32),
             'state': np.array([[state.v.v_long, state.v.v_tran, state.w.w_psi,
                                state.p.s, state.p.x_tran, state.p.e_psi,
-                               state.x.x, state.x.y, state.e.psi] for state in self.sim_state], dtype=np.float32),
+                               state.x.x, state.x.y, state.e.psi] for state in self.sim_state], dtype=np.float32).reshape(-1),
         }
         if self.enable_camera:
             while True:
@@ -631,8 +632,9 @@ class MultiBarcEnv(gym.Env):
         Episode terminates when the agent successfully overtakes the opponent
         """
         # Check if agent has overtaken the opponent using relative distance
-        was_behind = self.last_rel_dist >= 0
-        is_ahead = self.rel_dist < 0
+        distance_threshold = -0.5
+        was_behind = self.last_rel_dist >= distance_threshold
+        is_ahead = self.rel_dist < distance_threshold
         
         return was_behind and is_ahead
 
@@ -666,7 +668,7 @@ class MultiBarcEnv(gym.Env):
                 return True
             
         # Check for collision with opponent
-        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.2:
+        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.3:
             return True
         
         return False
