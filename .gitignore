@@ -8,3 +8,6 @@ install
 logs
 **/.idea
 **/*.egg-info
+**/*.pt
+checkpoints
+runs

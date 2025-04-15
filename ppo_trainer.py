@@ -8,7 +8,10 @@ import gym_carla
 from src.carla_gym.controllers.barc_pid import PIDWrapper
 from loguru import logger
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from torch.utils.tensorboard import SummaryWriter
+import time
+import datetime
 
 # Actor Network
 class Actor(nn.Module):
@@ -55,7 +58,10 @@ class PPOTrainer:
         clip_ratio: float = 0.2,
         target_kl: float = 0.01,
         max_grad_norm: float = 0.5,
-        device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+        log_dir: Optional[str] = None,
+        model_name: str = 'ppo',
+        comment: Optional[str] = None
     ):
         self.env = gym.make(env_name, track_name=track_name, do_render=False, enable_camera=False)
         self.opponent = PIDWrapper(dt=0.1, t0=0., track_obj=self.env.unwrapped.get_track())
@@ -82,7 +88,76 @@ class PPOTrainer:
         self.target_kl = target_kl
         self.max_grad_norm = max_grad_norm
         self.device = device
+
+        self.episode_count = 0
+        self.success_count = 0
         
+        # Store environment and model info
+        self.env_name = env_name
+        self.model_name = model_name
+        
+        # Setup TensorBoard
+        self.set_log_dir(log_dir, comment)
+        self.start_time = time.time()
+        
+    def set_log_dir(self, log_dir: Optional[str] = None, comment: Optional[str] = None):
+        """
+        Set the log directory with a formatted name based on model name, environment name, and optional comment.
+        
+        Args:
+            log_dir: Optional base directory for logs. If None, uses 'runs'.
+            comment: Optional comment to append to the log directory name.
+        """
+        # Create base log directory if not provided
+        if log_dir is None:
+            log_dir = 'runs'
+        
+        # Create timestamp for unique identification
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Build the log directory name
+        log_name = f"{self.model_name}_{self.env_name}"
+        if comment:
+            log_name += f"_{comment}"
+        log_name += f"_{timestamp}"
+        
+        # Create the full log directory path
+        self.log_dir = os.path.join(log_dir, log_name)
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        # Close existing writer if it exists
+        if hasattr(self, 'writer'):
+            self.writer.close()
+        
+        # Create new writer
+        self.writer = SummaryWriter(self.log_dir)
+        logger.info(f"TensorBoard logs will be saved to: {self.log_dir}")
+        
+        # Log hyperparameters
+        self.log_hyperparameters()
+    
+    def log_hyperparameters(self):
+        """Log hyperparameters to TensorBoard."""
+        hparams = {
+            'env_name': self.env_name,
+            'model_name': self.model_name,
+            'gamma': self.gamma,
+            'gae_lambda': self.gae_lambda,
+            'clip_ratio': self.clip_ratio,
+            'target_kl': self.target_kl,
+            'max_grad_norm': self.max_grad_norm,
+            'device': self.device,
+            'actor_hidden_dim': self.actor.net[0].out_features,
+            'critic_hidden_dim': self.critic.net[0].out_features,
+        }
+        
+        # Add hyperparameters to TensorBoard
+        self.writer.add_hparams(hparams, {'train/total_loss': 0})  # Placeholder metric
+        
+        # Log hyperparameters as text
+        hparams_text = "\n".join([f"{k}: {v}" for k, v in hparams.items()])
+        self.writer.add_text('hyperparameters', hparams_text)
+    
     def compute_gae(
         self,
         rewards: torch.Tensor,
@@ -160,12 +235,22 @@ class PPOTrainer:
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
+        # Track training metrics
+        total_losses = []
+        value_losses = []
+        kl_divs = []
+        
         # Perform multiple epochs of training
-        for _ in range(10):  # Number of epochs
+        for epoch in range(10):  # Number of epochs
             # Compute loss
             total_loss, value_loss, kl_div = self.compute_ppo_loss(
                 states, actions, old_log_probs, advantages, returns
             )
+            
+            # Track metrics
+            total_losses.append(total_loss.item())
+            value_losses.append(value_loss.item())
+            kl_divs.append(kl_div)
             
             # Early stopping if KL divergence is too high
             if kl_div > 1.5 * self.target_kl:
@@ -181,10 +266,15 @@ class PPOTrainer:
             self.actor_optimizer.step()
             self.critic_optimizer.step()
         
+        # Calculate average metrics
+        avg_total_loss = np.mean(total_losses)
+        avg_value_loss = np.mean(value_losses)
+        avg_kl_div = np.mean(kl_divs)
+        
         return {
-            'total_loss': total_loss.item(),
-            'value_loss': value_loss.item(),
-            'kl_div': kl_div
+            'total_loss': avg_total_loss,
+            'value_loss': avg_value_loss,
+            'kl_div': avg_kl_div
         }
     
     def collect_rollout(self, max_steps: int = 2048) -> Tuple[np.ndarray, ...]:
@@ -199,6 +289,9 @@ class PPOTrainer:
         state, info = self.env.reset()
         self.opponent.reset()
         state = state['state']  # Extract state from observation dict
+        
+        episode_rewards = []
+        current_episode_reward = 0
         
         for _ in range(max_steps):
             # Convert state to tensor
@@ -227,7 +320,11 @@ class PPOTrainer:
             log_probs.append(log_prob.cpu().numpy()[0])
             dones.append(done)
             
+            current_episode_reward += reward
+            
             if done:
+                episode_rewards.append(current_episode_reward)
+                current_episode_reward = 0
                 state, info = self.env.reset()
                 state = state['state']
             else:
@@ -237,6 +334,12 @@ class PPOTrainer:
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             final_value = self.critic(state_tensor).cpu().numpy()[0]
+        
+        # Log episode rewards
+        if episode_rewards:
+            self.writer.add_scalar('rollout/mean_episode_reward', np.mean(episode_rewards), self.episode_count)
+            self.writer.add_scalar('rollout/max_episode_reward', np.max(episode_rewards), self.episode_count)
+            self.writer.add_scalar('rollout/min_episode_reward', np.min(episode_rewards), self.episode_count)
         
         return (
             np.array(states),
@@ -250,7 +353,9 @@ class PPOTrainer:
     
     def train(self, num_iterations: int = 1000, max_steps: int = 2048):
         """Train the PPO agent."""
-        for i in range(num_iterations):
+        self.episode_count = 0
+        while self.episode_count < num_iterations:
+        # for i in range(num_iterations):
             # Collect rollout
             states, actions, rewards, values, log_probs, dones, final_value = self.collect_rollout(max_steps)
             
@@ -265,15 +370,64 @@ class PPOTrainer:
             # Perform PPO update
             metrics = self.train_step(states, actions, log_probs, advantages, returns)
             
+            # Log metrics to TensorBoard
+            self.writer.add_scalar('train/total_loss', metrics['total_loss'], self.episode_count)
+            self.writer.add_scalar('train/value_loss', metrics['value_loss'], self.episode_count)
+            self.writer.add_scalar('train/kl_divergence', metrics['kl_div'], self.episode_count)
+            self.writer.add_scalar('train/mean_advantage', advantages.mean().item(), self.episode_count)
+            self.writer.add_scalar('train/mean_return', returns.mean().item(), self.episode_count)
+            
             # Log metrics
-            logger.info(f"Iteration {i}")
+            logger.info(f"Iteration {self.episode_count}")
             logger.info(f"Total Loss: {metrics['total_loss']:.3f}")
             logger.info(f"Value Loss: {metrics['value_loss']:.3f}")
             logger.info(f"KL Divergence: {metrics['kl_div']:.3f}")
             
             # Save model periodically
-            if (i + 1) % 100 == 0:
-                self.save_model(f"ppo_model_{i+1}.pt")
+            if (self.episode_count + 1) % 100 == 0:
+                self.save_model(f"ppo_model_{self.episode_count + 1}.pt")
+
+            self.evaluate_agent()
+            self.episode_count += 1
+
+    def evaluate_agent(self):
+        state, info = self.env.reset(options={'render': True})
+        self.opponent.reset()
+        terminated, truncated = False, False
+        min_rel_dist = np.inf
+        episode_reward = 0
+        
+        with torch.no_grad():
+            while not truncated:
+                state_tensor = torch.FloatTensor(state['state']).unsqueeze(0).to(self.device)
+                mean, log_std = self.actor(state_tensor)
+                std = log_std.exp()
+                dist = Normal(mean, std)
+                action = dist.sample()
+                opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])  # If using self-play, use a copy of the policy to derive opponent action
+                state, reward, terminated, truncated, info = self.env.step(np.stack([action.cpu().numpy()[0], opponent_action], axis=0))
+                min_rel_dist = min(min_rel_dist, info['relative_distance'])
+                episode_reward += reward
+        
+        # Log evaluation metrics
+        self.writer.add_scalar('eval/episode_reward', episode_reward, self.episode_count)
+        self.writer.add_scalar('eval/min_relative_distance', min_rel_dist, self.episode_count)
+        
+        if terminated:
+            self.success_count += 1
+            logger.info(f"Successful overtaking! Episode {self.episode_count}")
+            self.writer.add_scalar('eval/success', 1, self.episode_count)
+        else:
+            logger.info(f"Failed to overtake. Episode {self.episode_count}")
+            logger.info(f"Min relative distance: {min_rel_dist}")
+            self.writer.add_scalar('eval/success', 0, self.episode_count)
+        logger.info(f"Success rate: {self.success_count}/{self.episode_count + 1}")
+        
+        # Log training time
+        elapsed_time = time.time() - self.start_time
+        self.writer.add_scalar('time/elapsed_seconds', elapsed_time, self.episode_count)
+        self.writer.add_scalar('time/episodes_per_second', self.episode_count / elapsed_time, self.episode_count)
+
     
     def save_model(self, filename: str):
         """Save the model."""
@@ -293,10 +447,28 @@ class PPOTrainer:
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
         logger.info(f"Model loaded from {filename}")
+        
+    def close(self):
+        """Close TensorBoard writer."""
+        self.writer.close()
 
 if __name__ == "__main__":
-    # Create trainer
-    trainer = PPOTrainer()
+    # Create trainer with custom log directory
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--comment', type=str, default='experimental')
+    params = parser.parse_args()
+
+    trainer = PPOTrainer(
+        model_name="ppo",
+        env_name="barc-v1",
+        track_name="L_track_barc",
+        comment=params.comment
+    )
     
     # Train the agent
-    trainer.train(num_iterations=1000, max_steps=2048) 
+    try:
+        trainer.train(num_iterations=1000, max_steps=2048) 
+    finally:
+        trainer.save_model('checkpoints/ppo.pth')
+        trainer.close()  # Close TensorBoard writer

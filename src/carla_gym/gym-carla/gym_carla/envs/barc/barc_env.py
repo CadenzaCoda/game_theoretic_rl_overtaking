@@ -51,16 +51,6 @@ class BarcEnv(gym.Env):
                                                    discretization_method='rk4',
                                                    simple_slip=False,
                                                    tire_model='pacejka',
-                                                   # mass=2.91,
-                                                   # gravity=9.81,
-                                                   # yaw_inertia=0.03323,
-                                                   # wheel_dist_front=0.13,
-                                                   # wheel_dist_rear=0.13,
-                                                   # wheel_dist_center_front=0.1,
-                                                   # wheel_dist_center_rear=0.1,
-                                                   # bump_dist_front=0.15,
-                                                   # bump_dist_rear=0.15,
-                                                   # bump_dist_center=0.1,
                                                    mass=2.2187,
                                                    yaw_inertia=0.02723,
                                                    wheel_friction=0.9,
@@ -166,7 +156,8 @@ class BarcEnv(gym.Env):
             np.random.seed(seed)
         if (options is not None and options.get('render')) or self.do_render:
             self.visualizer.reset()
-        elif self.visualizer is not None:
+        # elif self.visualizer is not None:
+        else:
             self.visualizer.close()
         if options.get('spawning') == 'fixed':
             logger.debug("Respawning at fixed location.")
@@ -567,8 +558,8 @@ class MultiBarcEnv(gym.Env):
         return obs, rew, terminated, truncated, info
 
     def render(self):
-        if not self.do_render:
-            return
+        # if not self.do_render:
+            # return
         self.visualizer.step(self.sim_state)
 
     def _get_obs(self) -> Dict[str, np.ndarray]:
@@ -616,8 +607,10 @@ class MultiBarcEnv(gym.Env):
             return -100.0  # Large negative reward for collision
             
         # Check if agent is behind opponent using relative distance
+        # if self.rel_dist > 0:
+            # return -1.0  # Small negative reward for being behind
         if self.rel_dist > 0:
-            return -1.0  # Small negative reward for being behind
+            return -self.rel_dist  # Small negative reward for being behind
             
         # Check if agent has successfully overtaken the opponent
         if self.rel_dist < 0 and self.last_rel_dist >= 0:
