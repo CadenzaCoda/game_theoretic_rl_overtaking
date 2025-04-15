@@ -605,6 +605,9 @@ class MultiBarcEnv(gym.Env):
         distance = np.linalg.norm(agent_pos - opponent_pos)
         if distance < 0.5:  # Collision threshold
             return -100.0  # Large negative reward for collision
+
+        if self.sim_state[0].v.v_long < 0.25 or np.abs(self.sim_state[0].p.e_psi) > np.pi / 2:
+            return -100.0  # Large negative reward for slow or wrong direction
             
         # Check if agent is behind opponent using relative distance
         # if self.rel_dist > 0:
