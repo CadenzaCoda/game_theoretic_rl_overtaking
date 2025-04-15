@@ -385,7 +385,7 @@ class PPOTrainer:
             
             # Save model periodically
             if (self.episode_count + 1) % 100 == 0:
-                self.save_model(f"ppo_model_{self.episode_count + 1}.pt")
+                self.save_model(f"ppo_model_{self.episode_count + 1}_{self.env_name}_{self.model_name}.pt")
 
             self.evaluate_agent()
             self.episode_count += 1
