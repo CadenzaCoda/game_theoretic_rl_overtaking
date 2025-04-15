@@ -456,7 +456,7 @@ if __name__ == "__main__":
     # Create trainer with custom log directory
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--comment', type=str, default='experimental')
+    parser.add_argument('-m', '--comment', type=str, default='experimental')
     params = parser.parse_args()
 
     trainer = PPOTrainer(

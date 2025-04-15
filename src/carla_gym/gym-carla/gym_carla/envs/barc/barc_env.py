@@ -597,31 +597,32 @@ class MultiBarcEnv(gym.Env):
     def _get_reward(self) -> float:
         # Check for collisions with track boundary
         if np.abs(self.sim_state[0].p.x_tran) > self.track_obj.half_width:
-            return -100.0  # Large negative reward for going off track
-            
-        # Check for collisions with opponent (simple distance-based check)
-        agent_pos = np.array([self.sim_state[0].x.x, self.sim_state[0].x.y])
-        opponent_pos = np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])
-        distance = np.linalg.norm(agent_pos - opponent_pos)
-        if distance < 0.5:  # Collision threshold
-            return -100.0  # Large negative reward for collision
-
+            return -100.0
+        
+        # Check for slow vehicles or wrong direction
         if self.sim_state[0].v.v_long < 0.25 or np.abs(self.sim_state[0].p.e_psi) > np.pi / 2:
-            return -100.0  # Large negative reward for slow or wrong direction
+            return -100.0
+        
+        # Check for collisions with opponent (simple distance-based check)
+        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.3:
+            return -100.0
+        
+        # Reward for successful overtaking
+        if self._get_terminal():
+            return 100.0
             
-        # Check if agent is behind opponent using relative distance
-        # if self.rel_dist > 0:
-            # return -1.0  # Small negative reward for being behind
-        if self.rel_dist > 0:
-            return -self.rel_dist  # Small negative reward for being behind
-            
-        # Check if agent has successfully overtaken the opponent
-        if self.rel_dist < 0 and self.last_rel_dist >= 0:
-            return 50.0  # Large positive reward for successful overtaking
-            
-        # Small positive reward for making progress (reducing the gap)
-        progress = self.last_rel_dist - self.rel_dist
-        return 0.1 * max(0, progress)
+        k_progress = 0.1
+        k_relative = 0.1
+        safe_distance_min = 0.5
+        epsilon = 1e-6
+
+        reward_progress = k_progress * (self.sim_state[0].p.s - self.last_state[0].p.s)
+
+        if self.rel_dist < safe_distance_min:
+            relative_reward = -k_relative * (safe_distance_min - self.rel_dist)
+        else:
+            relative_reward = k_relative * (1 / (self.rel_dist + epsilon))
+        return reward_progress + relative_reward  # Small negative reward for being behind
 
     def _get_terminal(self) -> bool:
         """
