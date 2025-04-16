@@ -376,7 +376,7 @@ class BarcEnv(gym.Env):
 class MultiBarcEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, track_name, t0=0., dt=0.1, dt_sim=0.01, max_n_laps=100,
+    def __init__(self, track_name, t0=0., dt=0.1, dt_sim=0.01, max_n_laps=5, max_steps=300,
                  do_render=False, enable_camera=True, host='localhost', port=2000):
         self.track_obj = get_track(track_name)
         # Fixed to 2 vehicles for racing
@@ -386,6 +386,7 @@ class MultiBarcEnv(gym.Env):
         self.dt = dt
         self.dt_sim = dt_sim
         self.max_n_laps = max_n_laps
+        self.max_steps = max_steps
         self.do_render = do_render
         self.enable_camera = enable_camera
         self.track_name = track_name
@@ -465,7 +466,7 @@ class MultiBarcEnv(gym.Env):
         self.collision_threshold = 0.3
         self.low_speed_threshold = 0.25
         self.wrong_direction_threshold = np.pi / 2
-        self.overtake_margin = 0.5
+        self.overtake_margin = -0.5
     def get_track(self):
         return self.track_obj
 
@@ -662,35 +663,48 @@ class MultiBarcEnv(gym.Env):
             return -100.0
         
         # Check for slow vehicles or wrong direction
-        if self.sim_state[0].v.v_long < 0.25 or np.abs(self.sim_state[0].p.e_psi) > np.pi / 2:
+        if self.sim_state[0].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[0].p.e_psi) > self.wrong_direction_threshold:
             return -100.0
         
         # Check for collisions with opponent (simple distance-based check)
         if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.3:
             return -100.0
         
+        # Check for being very behind the opponent
+        if self.rel_dist > self.track_obj.track_length * 0.8:
+            return -100.0
+        
         # Reward for successful overtaking
         if self._get_terminal():
             return 100.0
             
-        k_progress = 0.2
-        k_relative = 0.5
-        k_catching_up = 0.2
+        k_progress = 1
+        k_relative = 0.2  # 20 / (1 - 0.1) / 20
+        k_catching_up = 10
+        k_boundary = 0.2  # 20 / (1 - 0.9) / 20
+        k_speed = 0.2  # 20 / (1 - 0.5) / 20
         safe_distance_min = 0.5
-        epsilon = 1e-2
-        reward_progress = k_progress * (self.sim_state[0].p.s - self.last_state[0].p.s + (self.track_obj.track_length if self._is_new_lap()[0] else 0))
+        reward_progress_decay = 0.95
+
+        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s) * reward_progress_decay ** self.eps_len
 
         physical_distance = np.linalg.norm([
             self.sim_state[0].x.x - self.sim_state[1].x.x,
             self.sim_state[0].x.y - self.sim_state[1].x.y
         ])
 
-        catching_up_reward = k_catching_up / (self.rel_dist - self.overtake_margin + epsilon)  # Reward for catching up
+        # Penalty for being too close to the boundary
+        boundary_penalty = -k_boundary * max(0, np.abs(self.sim_state[0].p.x_tran) / self.track_obj.half_width - 0.9)
+
+        # Penalty for being too slow
+        speed_penalty = -k_speed * max(0, 0.5 - self.sim_state[0].v.v_long)
+
+        catching_up_reward = k_catching_up * (self.last_rel_dist - self.rel_dist)  # Reward for catching up
         if physical_distance < safe_distance_min:
             proximity_penalty = -k_relative * (safe_distance_min - physical_distance)  # Penalty for being too close to the opponent
         else:
             proximity_penalty = 0
-        return reward_progress + catching_up_reward + proximity_penalty - 0.05
+        return reward_progress + catching_up_reward + proximity_penalty + boundary_penalty + speed_penalty - 0.1
 
     # def _get_reward(self) -> float:
     #     # Base components
@@ -779,8 +793,10 @@ class MultiBarcEnv(gym.Env):
         # Check for maximum time steps (assuming max_steps is defined in __init__)
         # if hasattr(self, 'max_steps') and self.eps_len >= self.max_steps:
         #     return True
-        if any(lap_no >= self.max_n_laps for lap_no in self.lap_no):
+        # if any(lap_no >= self.max_n_laps for lap_no in self.lap_no):
             # logger.debug(f"Max laps reached: {self.lap_no}")
+            # return True
+        if self.eps_len > self.max_steps:
             return True
             
         # Check for slow vehicles or wrong direction
