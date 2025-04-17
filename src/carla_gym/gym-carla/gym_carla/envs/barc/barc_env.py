@@ -276,11 +276,69 @@ class BarcEnv(gym.Env):
         return ob
 
     def _get_reward(self) -> float:
-        ds = self.sim_state.p.s - self.last_state.p.s
-        if self._is_new_lap() and self.sim_state.p.s < self.last_state.p.s:
-            ds += self.track_obj.track_length
-        return ds
-        # return 0
+        # Initialize reward
+        reward = 0.0
+        
+        # Check for collisions with track boundary
+        if np.abs(self.sim_state.p.x_tran) > self.track_obj.half_width:
+            return -100.0
+        
+        # Check for slow vehicles or wrong direction
+        if self.sim_state.v.v_long < 0.25 or np.abs(self.sim_state.p.e_psi) > np.pi / 2:
+            return -100.0
+        
+        # Calculate distance between vehicles
+        ego_pos = np.array([self.sim_state.x.x, self.sim_state.x.y])
+        opp_pos = np.array([self.last_state.x.x, self.last_state.x.y])
+        distance = np.linalg.norm(ego_pos - opp_pos)
+        
+        # Check for collisions with opponent (simple distance-based check)
+        if distance < 0.3:
+            return -100.0
+        
+        # Reward for successful overtaking
+        if self._is_new_lap():
+            return 100.0
+            
+        # Reward components
+        k_progress = 0.5  # Increased from 0.1
+        k_relative = 0.3  # Increased from 0.1
+        k_speed = 0.2     # New component for speed
+        k_lateral = 0.1   # New component for lateral position
+        
+        # 1. Progress reward - encourage forward movement
+        progress = self.sim_state.p.s - self.last_state.p.s
+        reward_progress = k_progress * progress
+        
+        # 2. Relative distance reward - encourage getting closer to opponent
+        safe_distance_min = 0.5
+        distance_threshold = -0.5
+        epsilon = 1e-1
+        
+        if distance < safe_distance_min:
+            # Penalize for being too close (exponential penalty)
+            relative_reward = -k_relative * np.exp(safe_distance_min - distance)
+        else:
+            # Reward for closing the gap (with diminishing returns)
+            relative_reward = k_relative * (1.0 / (distance + epsilon))
+        
+        # 3. Speed reward - encourage maintaining good speed
+        speed = self.sim_state.v.v_long
+        target_speed = 5.0  # Target speed in m/s
+        speed_reward = k_speed * (1.0 - np.abs(speed - target_speed) / target_speed)
+        
+        # 4. Lateral position reward - encourage staying in the middle of the track
+        lateral_error = np.abs(self.sim_state.p.x_tran)
+        max_lateral_error = self.track_obj.half_width * 0.8  # 80% of track width
+        lateral_reward = k_lateral * (1.0 - lateral_error / max_lateral_error)
+        
+        # Combine all rewards
+        reward = reward_progress + relative_reward + speed_reward + lateral_reward
+        
+        # Add small negative reward to encourage efficiency
+        reward -= 0.01
+        
+        return reward
 
     def _get_terminal(self) -> bool:
         """
@@ -307,7 +365,7 @@ class BarcEnv(gym.Env):
         return {
             'vehicle_state': copy.deepcopy(self.sim_state),  # Ground truth vehicle state.
             'lap_no': self.lap_no,  # Lap number
-            'terminated': self._get_terminal(),
+            'terminated': self._is_new_lap(),
             'avg_lap_speed': self._sum_lap_speed / self.eps_len,  # Mean velocity of the current lap.
             'max_lap_speed': self.max_lap_speed,  # Max velocity of the current lap.
             'min_lap_speed': self.min_lap_speed,  # Min velocity of the current lap.
@@ -318,7 +376,7 @@ class BarcEnv(gym.Env):
 class MultiBarcEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, track_name, t0=0., dt=0.1, dt_sim=0.01, max_n_laps=100,
+    def __init__(self, track_name, t0=0., dt=0.1, dt_sim=0.01, max_n_laps=5, max_steps=300,
                  do_render=False, enable_camera=True, host='localhost', port=2000):
         self.track_obj = get_track(track_name)
         # Fixed to 2 vehicles for racing
@@ -328,6 +386,7 @@ class MultiBarcEnv(gym.Env):
         self.dt = dt
         self.dt_sim = dt_sim
         self.max_n_laps = max_n_laps
+        self.max_steps = max_steps
         self.do_render = do_render
         self.enable_camera = enable_camera
         self.track_name = track_name
@@ -403,7 +462,11 @@ class MultiBarcEnv(gym.Env):
 
         self.t = None
         self.max_lap_speed = self.min_lap_speed = self._sum_lap_speed = self.eps_len = 0
-
+        
+        self.collision_threshold = 0.3
+        self.low_speed_threshold = 0.25
+        self.wrong_direction_threshold = np.pi / 2
+        self.overtake_margin = -0.5
     def get_track(self):
         return self.track_obj
 
@@ -593,45 +656,118 @@ class MultiBarcEnv(gym.Env):
                 # 'imu': None,
             })
         return ob
-
+    
     def _get_reward(self) -> float:
         # Check for collisions with track boundary
         if np.abs(self.sim_state[0].p.x_tran) > self.track_obj.half_width:
             return -100.0
         
         # Check for slow vehicles or wrong direction
-        if self.sim_state[0].v.v_long < 0.25 or np.abs(self.sim_state[0].p.e_psi) > np.pi / 2:
+        if self.sim_state[0].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[0].p.e_psi) > self.wrong_direction_threshold:
             return -100.0
         
         # Check for collisions with opponent (simple distance-based check)
         if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.3:
             return -100.0
         
+        # Check for being very behind the opponent
+        if self.rel_dist > self.track_obj.track_length * 0.8:
+            return -100.0
+        
         # Reward for successful overtaking
         if self._get_terminal():
             return 100.0
             
-        k_progress = 0.1
-        k_relative = 0.1
+        k_progress = 1
+        k_relative = 0.2  # 20 / (1 - 0.1) / 20
+        k_catching_up = 10
+        k_boundary = 0.2  # 20 / (1 - 0.9) / 20
+        k_speed = 0.2  # 20 / (1 - 0.5) / 20
         safe_distance_min = 0.5
-        epsilon = 1e-6
+        reward_progress_decay = 0.95
 
-        reward_progress = k_progress * (self.sim_state[0].p.s - self.last_state[0].p.s)
+        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s) * reward_progress_decay ** self.eps_len
 
-        if self.rel_dist < safe_distance_min:
-            relative_reward = -k_relative * (safe_distance_min - self.rel_dist)
+        physical_distance = np.linalg.norm([
+            self.sim_state[0].x.x - self.sim_state[1].x.x,
+            self.sim_state[0].x.y - self.sim_state[1].x.y
+        ])
+
+        # Penalty for being too close to the boundary
+        boundary_penalty = -k_boundary * max(0, np.abs(self.sim_state[0].p.x_tran) / self.track_obj.half_width - 0.9)
+
+        # Penalty for being too slow
+        speed_penalty = -k_speed * max(0, 0.5 - self.sim_state[0].v.v_long)
+
+        catching_up_reward = k_catching_up * (self.last_rel_dist - self.rel_dist)  # Reward for catching up
+        if physical_distance < safe_distance_min:
+            proximity_penalty = -k_relative * (safe_distance_min - physical_distance)  # Penalty for being too close to the opponent
         else:
-            relative_reward = k_relative * (1 / (self.rel_dist + epsilon))
-        return reward_progress + relative_reward  # Small negative reward for being behind
+            proximity_penalty = 0
+        return reward_progress + catching_up_reward + proximity_penalty + boundary_penalty + speed_penalty - 0.1
+
+    # def _get_reward(self) -> float:
+    #     # Base components
+    #     progress = self.sim_state[0].p.s - self.last_state[0].p.s
+    #     if self._is_new_lap()[0]:
+    #         progress += self.track_obj.track_length
+
+    #     velocity = self.sim_state[0].v.v_long
+    #     heading = np.abs(self.sim_state[0].p.e_psi)
+        
+    #     # Dynamic safety components
+    #     physical_distance = np.linalg.norm([
+    #         self.sim_state[0].x.x - self.sim_state[1].x.x,
+    #         self.sim_state[0].x.y - self.sim_state[1].x.y
+    #     ])
+    #     track_offset = np.abs(self.sim_state[0].p.x_tran)
+    #     safety_margin = 0.4  # meters
+    #     max_speed = 3.
+        
+    #     # Progressive penalties (smooth instead of binary)
+    #     safety_penalty = np.clip(1 - (physical_distance / safety_margin), 0, 1) * -10
+    #     track_penalty = np.clip(track_offset / (self.track_obj.half_width * 0.9), 0, 1) * -5
+        
+    #     # Velocity incentives (encourage controlled speed)
+    #     speed_bonus = np.clip(velocity / max_speed, 0, 1) * 2
+    #     heading_penalty = np.clip(heading / (np.pi / 4), 0, 1) * -3
+        
+    #     # Overtaking incentives
+    #     overtaking_bonus = np.clip(-self.rel_dist/2, -1, 1)  # Scales with lead
+        
+    #     # Progress reward with diminishing returns
+    #     progress_reward = 0.2 * np.log(1 + progress)
+        
+    #     # Composite reward
+    #     reward = (
+    #         progress_reward +
+    #         speed_bonus +
+    #         overtaking_bonus +
+    #         safety_penalty +
+    #         track_penalty +
+    #         heading_penalty
+    #     )
+        
+    #     # Terminal conditions
+    #     if self._get_terminal():
+    #         reward += 50 + 20 * -self.rel_dist  # Scale with overtaking margin
+    #     elif any([
+    #         track_offset > self.track_obj.half_width,
+    #         velocity < self.low_speed_threshold,
+    #         self.rel_dist < self.collision_threshold
+    #     ]):
+    #         reward -= 20  # Reduced from -100
+        
+    #     return float(reward)
+
 
     def _get_terminal(self) -> bool:
         """
         Episode terminates when the agent successfully overtakes the opponent
         """
         # Check if agent has overtaken the opponent using relative distance
-        distance_threshold = -0.5
-        was_behind = self.last_rel_dist >= distance_threshold
-        is_ahead = self.rel_dist < distance_threshold
+        was_behind = self.last_rel_dist >= self.overtake_margin
+        is_ahead = self.rel_dist < self.overtake_margin
         
         return was_behind and is_ahead
 
@@ -649,23 +785,34 @@ class MultiBarcEnv(gym.Env):
             return True
             
         # Check for out of track
-        for state in self.sim_state:
+        for i, state in enumerate(self.sim_state):
             if np.abs(state.p.x_tran) > self.track_obj.half_width:
+                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
                 return True
                 
         # Check for maximum time steps (assuming max_steps is defined in __init__)
         # if hasattr(self, 'max_steps') and self.eps_len >= self.max_steps:
         #     return True
-        if any(lap_no >= self.max_n_laps for lap_no in self.lap_no):
+        # if any(lap_no >= self.max_n_laps for lap_no in self.lap_no):
+            # logger.debug(f"Max laps reached: {self.lap_no}")
+            # return True
+        if self.eps_len > self.max_steps:
             return True
             
         # Check for slow vehicles or wrong direction
-        for state in self.sim_state:
-            if state.v.v_long < 0.25 or np.abs(state.p.e_psi) > np.pi / 2:
+        for i, state in enumerate(self.sim_state):
+            if state.v.v_long < self.low_speed_threshold or np.abs(state.p.e_psi) > self.wrong_direction_threshold:
+                # logger.debug(f"Slow vehicle: {state.v.v_long} or wrong direction: {state.p.e_psi} by vehicle {i}")
                 return True
             
         # Check for collision with opponent
-        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.3:
+        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < self.collision_threshold:
+            # logger.debug(f"Collision: {np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y]))}")
+            return True
+
+        # Stop if the ego is very far behind the opponent
+        if self.rel_dist > self.track_obj.track_length * 0.8:
+            # logger.debug(f"Ego is very far behind the opponent: {self.rel_dist}")
             return True
         
         return False

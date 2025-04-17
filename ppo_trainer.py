@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple, Optional
 from torch.utils.tensorboard import SummaryWriter
 import time
 import datetime
-
+import pdb
 # Actor Network
 class Actor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
@@ -385,7 +385,7 @@ class PPOTrainer:
             
             # Save model periodically
             if (self.episode_count + 1) % 100 == 0:
-                self.save_model(f"ppo_model_{self.episode_count + 1}.pt")
+                self.save_model(f"ppo_model_{self.episode_count + 1}_{self.env_name}_{self.model_name}.pt")
 
             self.evaluate_agent()
             self.episode_count += 1
