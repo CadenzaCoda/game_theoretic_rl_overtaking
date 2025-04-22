@@ -199,6 +199,8 @@ class MultiVehicleVisualizer:
         self.controller = controller
 
     def step(self, state=None, *, q=None, u=None, pred=None, ss=None):
+        if not self.enabled:
+            return
         if state is not None:
             # Handle list of vehicle states
             if isinstance(state, list):
