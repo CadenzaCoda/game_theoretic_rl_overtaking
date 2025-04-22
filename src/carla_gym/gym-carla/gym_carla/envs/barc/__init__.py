@@ -10,4 +10,8 @@ register(
     entry_point='gym_carla.envs.barc.barc_env:MultiBarcEnv',
     # max_episode_steps=100000,
 )
+register(
+    id='barc-v1-race',
+    entry_point='gym_carla.envs.barc.barc_env:BarcEnvRace',
+)
 from gym_carla.envs.barc.barc_env import BarcEnv
