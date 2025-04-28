@@ -69,6 +69,7 @@ class BarcEnvRace(gym.Env):
 
         # self.visualizer = LMPCVisualizer(track_obj=self.track_obj, VL=VL, VW=VW)
         self.visualizer = MultiVehicleVisualizer(track_obj=self.track_obj, VL=VL, VW=VW)
+        self.bind_controller(self.opponent)  # TODO: When the policy has learned to do predictions, bind with both policies.
 
         self.sim_state: Optional[List[VehicleState]] = None
         self.last_state: Optional[List[VehicleState]] = None

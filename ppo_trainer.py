@@ -3,24 +3,61 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from numpy import floating
+
 from gym_carla.controllers.barc_pid import PIDWrapper
 from loguru import logger
 import os
-from typing import Dict, Tuple, Optional, Union
+from typing import Dict, Tuple, Optional, Union, Any
 from torch.utils.tensorboard import SummaryWriter
+from torch.distributions import Distribution, Categorical, Normal
+import torch.nn.functional as F
 import time
 import datetime
 
 from mpclab_common.track import get_track
 
 
+class MultiCategorical(Distribution):
+    arg_constraints = {}  # Optional: constraints on arguments (skip for now)
+    has_rsample = False   # Cannot reparameterize sampling for discrete actions
+
+    def __init__(self, logits: torch.Tensor, nvec: list):
+        super().__init__(batch_shape=logits.shape[:-1], event_shape=torch.Size([len(nvec)]))
+        self.nvec = nvec
+        self.split_logits = torch.split(logits, nvec, dim=-1)
+        self.categoricals = [Categorical(logits=logit) for logit in self.split_logits]
+
+    def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
+        samples = [dist.sample(sample_shape) for dist in self.categoricals]
+        # Each sample has shape: sample_shape + batch_shape
+        # Stack them to create final shape: sample_shape + batch_shape + event_shape
+        return torch.stack(samples, dim=-1)
+
+    def log_prob(self, actions: torch.Tensor):
+        log_probs = [
+            dist.log_prob(actions[..., i])
+            for i, dist in enumerate(self.categoricals)
+        ]
+        return torch.stack(log_probs, dim=-1).sum(dim=-1)
+
+    def entropy(self):
+        entropies = [dist.entropy() for dist in self.categoricals]
+        return torch.stack(entropies, dim=-1).sum(dim=-1)
+
+    def mode(self):
+        """Return the mode (argmax) of each categorical."""
+        modes = [torch.argmax(logits, dim=-1) for logits in self.split_logits]
+        return torch.stack(modes, dim=-1)
+
+
 # Actor Network
 class Actor(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int, n_actions_per_dim: int = 5, hidden_dim: int = 256,
+    def __init__(self, state_dim: int, action_dim: int, n_actions_per_dim: np.ndarray, hidden_dim: int = 256,
                  discrete: bool = False):
         super(Actor, self).__init__()
         self.action_dim = action_dim
-        self.n_actions_per_dim = n_actions_per_dim  # TODO: I don't think this is how discrete actors are implemented... Refer to CS285 assignment repo.
+        self.n_actions_per_dim = n_actions_per_dim
         self.discrete = discrete
         
         self.net = nn.Sequential(
@@ -28,7 +65,7 @@ class Actor(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(hidden_dim, action_dim * (n_actions_per_dim if discrete else 2))  # Output logits for each action dimension
+            nn.Linear(hidden_dim, np.sum(n_actions_per_dim) if discrete else action_dim * 2)
         )
         
     def forward(self, state: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
@@ -36,13 +73,8 @@ class Actor(nn.Module):
         if self.discrete:
             mean, log_std = torch.chunk(x, 2, dim=-1)
             log_std = torch.clamp(log_std, -20, 2)  # Prevent too small or large std.
-            return mean, log_std
-
-        # Reshape to [batch_size, action_dim, n_actions_per_dim]
-        x = x.view(-1, self.action_dim, self.n_actions_per_dim)
-        # Apply softmax to get probabilities for each dimension
-        probs = torch.softmax(x, dim=-1)
-        return probs
+            return mean, log_std  # These are the mean and log_std for Normal distributions.
+        return x  # These are logits, and they will be used to form a MultiCategorical distribution later.
 
 
 # Critic Network
@@ -76,32 +108,30 @@ class PPOTrainer:
         log_dir: Optional[str] = None,
         model_name: str = 'ppo',
         comment: Optional[str] = None,
-        n_actions_per_dim: int = 5
+        n_actions_per_dim: int = 10
     ):
         self.env = env
-        self.discrete = isinstance(self.env.action_space, gym.spaces.Discrete)
-        # Changed: n_actions_per_dim
-        # self.opponent = PIDWrapper(dt=0.1, t0=0., track_obj=self.env.unwrapped.get_track())  # TODO: With barc-v2, this is already part of the environment and therefore is not needed.
-        # self.env.unwrapped.bind_controller(self.opponent)
         
         # Get state and action dimensions from environment
         state_dim = self.env.observation_space.shape[0]
-        action_dim = self.env.action_space.n if self.discrete else self.env.action_space.shape[0]
-        # state_dim = self.env.observation_space['state'].shape[0]
-        # action_dim = self.env.action_space.shape[1]
-        # logger.debug(f"State dimension: {state_dim}")
-        # logger.debug(f"Action dimension: {action_dim}")
-        
-        # Set up discrete action space
-        self.n_actions_per_dim = n_actions_per_dim
-        self.action_bounds = self.env.action_space.low, self.env.action_space.high
-        self.action_values = [
-            np.linspace(low, high, n_actions_per_dim)
-            for low, high in zip(self.action_bounds[0], self.action_bounds[1])
-        ]  # TODO: This should be a part of the environment.
-        
+        if isinstance(self.env.action_space, gym.spaces.MultiDiscrete):
+            self.n_logits = self.env.action_space.nvec
+            self.action_dim = len(self.env.action_space.nvec)
+            self.discrete = True
+        elif isinstance(self.env.action_space, gym.spaces.Discrete):
+            self.n_logits = np.array([self.env.action_space.n])
+            self.action_dim = 1
+            self.discrete = True
+        elif isinstance(self.env.action_space, gym.spaces.Box):
+            self.n_logits = None
+            self.action_dim = self.env.action_space.shape[0]
+            self.discrete = False
+        else:
+            raise NotImplementedError(f"Unsupported action space: {self.env.action_space}")
+
         # Initialize networks
-        self.actor = Actor(state_dim, action_dim, n_actions_per_dim, hidden_dim).to(device)
+        self.actor = Actor(state_dim, action_dim=self.action_dim, n_actions_per_dim=self.n_logits,
+                           hidden_dim=hidden_dim, discrete=self.discrete).to(device)
         self.critic = Critic(state_dim, hidden_dim).to(device)
         
         # Initialize optimizers
@@ -218,17 +248,18 @@ class PPOTrainer:
     ) -> Tuple[torch.Tensor, torch.Tensor, float]:
         """Compute PPO loss for both actor and critic."""
         # Get current policy distribution
-        # mean, log_std = self.actor(states)
-        # std = log_std.exp()
-        # dist = Normal(mean, std)
-        probs = self.actor(states)
-        
+        if self.discrete:
+            logits = self.actor(states)
+            dist = MultiCategorical(logits=logits, nvec=self.n_logits)
+        else:
+            mean, log_std = self.actor(states)
+            std = log_std.exp()
+            dist = Normal(mean, std)
+
         # Compute new log probs and entropy
-        # new_log_probs = dist.log_prob(actions).sum(dim=-1)
-        # entropy = dist.entropy().mean()
-        new_log_probs = torch.log(probs.clamp(min=1e-8))
-        entropy = -(probs * new_log_probs).sum(dim=-1).mean()
-        
+        new_log_probs = dist.log_prob(actions).sum(dim=-1)
+        entropy = dist.entropy().mean()
+
         # Compute ratio and clipped surrogate loss
         ratio = torch.exp(new_log_probs - old_log_probs)
         clip_adv = torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * advantages
@@ -248,12 +279,12 @@ class PPOTrainer:
     
     def train_step(
         self,
-        states: torch.Tensor,
-        actions: torch.Tensor,
-        old_log_probs: torch.Tensor,
-        advantages: torch.Tensor,
-        returns: torch.Tensor
-    ) -> Dict[str, float]:
+        states: np.ndarray,
+        actions: np.ndarray,
+        old_log_probs: np.ndarray,
+        advantages: np.ndarray,
+        returns: np.ndarray,
+    ) -> dict[str, floating[Any]]:
         """Perform one step of PPO training."""
         # Convert to tensors and move to device
         states = torch.FloatTensor(states).to(self.device)
@@ -306,28 +337,6 @@ class PPOTrainer:
             'value_loss': avg_value_loss,
             'kl_div': avg_kl_div
         }
-    
-    def sample_action(self, probs: torch.Tensor) -> Tuple[np.ndarray, float]:
-        """Sample action from discrete probability distribution."""
-        # Reshape probs to [batch_size, n_actions_per_dim] for each action dimension
-        probs = probs.squeeze(0)  # Remove batch dimension
-        
-        # Sample action indices for each dimension
-        action_indices = torch.multinomial(probs, 1).squeeze(-1)
-        print(f"Action indices: {action_indices}")
-        print(f"Action indices shape: {np.shape(action_indices)}")
-        # Convert indices to actual action valuesnp.l
-        actions = np.array([
-            self.action_values[i][idx.item()]
-            for i, idx in enumerate(action_indices)
-        ])
-        actions = actions.flatten()
-        print(f"Actions: {actions}")
-        print(f"Action bounds: {self.action_bounds}")
-        # Calculate log probability
-        log_prob = torch.log(probs[range(len(action_indices)), action_indices]).sum().item()
-        
-        return actions, log_prob
 
     def collect_rollout(self, max_steps: int = 2048) -> Tuple[np.ndarray, ...]:
         """Collect a rollout of experiences."""
@@ -339,8 +348,7 @@ class PPOTrainer:
         dones = []
         
         state, info = self.env.reset()
-        self.opponent.reset()
-        state = state['state']  # Extract state from observation dict
+        # state = state['state']  # Extract state from observation dict
         
         episode_rewards = []
         current_episode_reward = 0
@@ -351,19 +359,19 @@ class PPOTrainer:
             
             # Get action from policy
             with torch.no_grad():
-                probs = self.actor(state_tensor)
-                action, log_prob = self.sample_action(probs)
+                if self.discrete:
+                    logits = self.actor(state_tensor)
+                    dist = MultiCategorical(logits, self.n_logits)
+                else:
+                    mean, log_std = self.actor(state_tensor)
+                    std = log_std.exp()
+                    dist = Normal(mean, std)
+                action = dist.sample().cpu().numpy()
+                log_prob = dist.log_prob(action).sum(dim=-1)
                 value = self.critic(state_tensor)
-            
-            # Take action in environment
-            opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])
-            print(f"Action shape: {np.shape(action)}, Opponent action shape: {np.shape(opponent_action)}")
-            
-            # Stack actions with proper shape
-            combined_action = np.stack([action, opponent_action], axis=0)
-            
-            next_state, reward, terminated, truncated, info = self.env.step(combined_action)
-            next_state = next_state['state']  # Extract state from observation dict
+
+            next_state, reward, terminated, truncated, info = self.env.step(action)
+            # next_state = next_state['state']  # Extract state from observation dict
             # done = terminated or truncated  # This is incorrect. Should use terminated.
 
             # Store experience
@@ -381,10 +389,10 @@ class PPOTrainer:
                 episode_rewards.append(current_episode_reward)
                 current_episode_reward = 0
                 state, info = self.env.reset()
-                state = state['state']
+                # state = state['state']
             else:
                 state = next_state
-        
+
         # Get final value for GAE computation
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -447,18 +455,21 @@ class PPOTrainer:
 
     def evaluate_agent(self):
         state, info = self.env.reset(options={'render': True})
-        self.opponent.reset()
         terminated, truncated = False, False
         min_rel_dist = np.inf
         episode_reward = 0
         
         with torch.no_grad():
             while not truncated:
-                state_tensor = torch.FloatTensor(state['state']).unsqueeze(0).to(self.device)
-                probs = self.actor(state_tensor)
-                action, _ = self.sample_action(probs)
-                opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])
-                state, reward, terminated, truncated, info = self.env.step(np.stack([action, opponent_action], axis=0))
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+                if self.discrete:
+                    mean, log_std = self.actor(state_tensor)
+                    dist = Normal(mean, log_std.exp())
+                else:
+                    logits = self.actor(state_tensor)
+                    dist = MultiCategorical(logits, self.n_logits)
+                action = dist.sample().cpu().numpy()[0]
+                state, reward, terminated, truncated, info = self.env.step(action)
                 min_rel_dist = min(min_rel_dist, info['relative_distance'])
                 episode_reward += reward
         

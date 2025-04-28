@@ -28,6 +28,12 @@ def barc_env_with_continuous_action():
                     )
 
 
+def test_discrete_action_space_dimension(barc_env_with_discrete_action):
+    env = barc_env_with_discrete_action
+    env.reset()
+    assert (env.action_space.nvec == np.array([10, 10])).all(), "Discrete action space dimension is incorrect"
+
+
 def test_decode_action_discrete(barc_env_with_discrete_action):
     env = barc_env_with_discrete_action
     env.reset()
