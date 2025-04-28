@@ -3,39 +3,47 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Normal
-import gym_carla
-from src.carla_gym.controllers.barc_pid import PIDWrapper
+from gym_carla.controllers.barc_pid import PIDWrapper
 from loguru import logger
 import os
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 from torch.utils.tensorboard import SummaryWriter
 import time
 import datetime
-import pdb
+
+from mpclab_common.track import get_track
+
 
 # Actor Network
 class Actor(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int, n_actions_per_dim: int = 5, hidden_dim: int = 256):
+    def __init__(self, state_dim: int, action_dim: int, n_actions_per_dim: int = 5, hidden_dim: int = 256,
+                 discrete: bool = False):
         super(Actor, self).__init__()
         self.action_dim = action_dim
-        self.n_actions_per_dim = n_actions_per_dim
+        self.n_actions_per_dim = n_actions_per_dim  # TODO: I don't think this is how discrete actors are implemented... Refer to CS285 assignment repo.
+        self.discrete = discrete
         
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(hidden_dim, action_dim * n_actions_per_dim)  # Output logits for each action dimension
+            nn.Linear(hidden_dim, action_dim * (n_actions_per_dim if discrete else 2))  # Output logits for each action dimension
         )
         
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
+    def forward(self, state: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         x = self.net(state)
+        if self.discrete:
+            mean, log_std = torch.chunk(x, 2, dim=-1)
+            log_std = torch.clamp(log_std, -20, 2)  # Prevent too small or large std.
+            return mean, log_std
+
         # Reshape to [batch_size, action_dim, n_actions_per_dim]
         x = x.view(-1, self.action_dim, self.n_actions_per_dim)
         # Apply softmax to get probabilities for each dimension
         probs = torch.softmax(x, dim=-1)
         return probs
+
 
 # Critic Network
 class Critic(nn.Module):
@@ -52,11 +60,11 @@ class Critic(nn.Module):
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         return self.net(state).squeeze(1)
 
+
 class PPOTrainer:
     def __init__(
         self,
-        env_name: str = 'barc-v1',
-        track_name: str = 'L_track_barc',
+        env: gym.Env,
         hidden_dim: int = 256,
         learning_rate: float = 3e-4,
         gamma: float = 0.99,
@@ -70,16 +78,19 @@ class PPOTrainer:
         comment: Optional[str] = None,
         n_actions_per_dim: int = 5
     ):
+        self.env = env
+        self.discrete = isinstance(self.env.action_space, gym.spaces.Discrete)
         # Changed: n_actions_per_dim
-        self.env = gym.make(env_name, track_name=track_name, do_render=False, enable_camera=False)
-        self.opponent = PIDWrapper(dt=0.1, t0=0., track_obj=self.env.unwrapped.get_track())
+        # self.opponent = PIDWrapper(dt=0.1, t0=0., track_obj=self.env.unwrapped.get_track())  # TODO: With barc-v2, this is already part of the environment and therefore is not needed.
         # self.env.unwrapped.bind_controller(self.opponent)
         
         # Get state and action dimensions from environment
-        state_dim = self.env.observation_space['state'].shape[0]
-        action_dim = self.env.action_space.shape[1]
-        logger.debug(f"State dimension: {state_dim}")
-        logger.debug(f"Action dimension: {action_dim}")
+        state_dim = self.env.observation_space.shape[0]
+        action_dim = self.env.action_space.n if self.discrete else self.env.action_space.shape[0]
+        # state_dim = self.env.observation_space['state'].shape[0]
+        # action_dim = self.env.action_space.shape[1]
+        # logger.debug(f"State dimension: {state_dim}")
+        # logger.debug(f"Action dimension: {action_dim}")
         
         # Set up discrete action space
         self.n_actions_per_dim = n_actions_per_dim
@@ -87,7 +98,7 @@ class PPOTrainer:
         self.action_values = [
             np.linspace(low, high, n_actions_per_dim)
             for low, high in zip(self.action_bounds[0], self.action_bounds[1])
-        ]
+        ]  # TODO: This should be a part of the environment.
         
         # Initialize networks
         self.actor = Actor(state_dim, action_dim, n_actions_per_dim, hidden_dim).to(device)
@@ -353,19 +364,20 @@ class PPOTrainer:
             
             next_state, reward, terminated, truncated, info = self.env.step(combined_action)
             next_state = next_state['state']  # Extract state from observation dict
-            done = terminated or truncated  # TODO: This is incorrect. Should use terminated. 
-            
+            # done = terminated or truncated  # This is incorrect. Should use terminated.
+
             # Store experience
             states.append(state)
             actions.append(action)
             rewards.append(reward)
             values.append(value.cpu().numpy()[0])
             log_probs.append(log_prob)
-            dones.append(done)
+            # dones.append(done)
+            dones.append(terminated)
             
             current_episode_reward += reward
             
-            if done:
+            if terminated or truncated:  # Reset on either condition.
                 episode_rewards.append(current_episode_reward)
                 current_episode_reward = 0
                 state, info = self.env.reset()
@@ -503,10 +515,14 @@ if __name__ == "__main__":
     parser.add_argument('-m', '--comment', type=str, default='experimental')
     params = parser.parse_args()
 
+    env_name = "barc-v1-race"
+    track_name = "L_track_barc"
+    opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
+    env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False)  # Initializing the env outside the trainer makes more sense.
+
     trainer = PPOTrainer(
+        env=env,
         model_name="ppo",
-        env_name="barc-v1",
-        track_name="L_track_barc",
         comment=params.comment
     )
     
