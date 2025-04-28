@@ -16,21 +16,26 @@ import pdb
 
 # Actor Network
 class Actor(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
+    def __init__(self, state_dim: int, action_dim: int, n_actions_per_dim: int = 5, hidden_dim: int = 256):
         super(Actor, self).__init__()
+        self.action_dim = action_dim
+        self.n_actions_per_dim = n_actions_per_dim
+        
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(hidden_dim, action_dim * 2)  # Mean and log_std for each action dimension
+            nn.Linear(hidden_dim, action_dim * n_actions_per_dim)  # Output logits for each action dimension
         )
         
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
         x = self.net(state)
-        mean, log_std = torch.chunk(x, 2, dim=-1)
-        log_std = torch.clamp(log_std, -20, 2)  # Prevent too small or large std
-        return mean, log_std
+        # Reshape to [batch_size, action_dim, n_actions_per_dim]
+        x = x.view(-1, self.action_dim, self.n_actions_per_dim)
+        # Apply softmax to get probabilities for each dimension
+        probs = torch.softmax(x, dim=-1)
+        return probs
 
 # Critic Network
 class Critic(nn.Module):
@@ -62,8 +67,10 @@ class PPOTrainer:
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
         log_dir: Optional[str] = None,
         model_name: str = 'ppo',
-        comment: Optional[str] = None
+        comment: Optional[str] = None,
+        n_actions_per_dim: int = 5
     ):
+        # Changed: n_actions_per_dim
         self.env = gym.make(env_name, track_name=track_name, do_render=False, enable_camera=False)
         self.opponent = PIDWrapper(dt=0.1, t0=0., track_obj=self.env.unwrapped.get_track())
         # self.env.unwrapped.bind_controller(self.opponent)
@@ -74,8 +81,16 @@ class PPOTrainer:
         logger.debug(f"State dimension: {state_dim}")
         logger.debug(f"Action dimension: {action_dim}")
         
+        # Set up discrete action space
+        self.n_actions_per_dim = n_actions_per_dim
+        self.action_bounds = self.env.action_space.low, self.env.action_space.high
+        self.action_values = [
+            np.linspace(low, high, n_actions_per_dim)
+            for low, high in zip(self.action_bounds[0], self.action_bounds[1])
+        ]
+        
         # Initialize networks
-        self.actor = Actor(state_dim, action_dim, hidden_dim).to(device)
+        self.actor = Actor(state_dim, action_dim, n_actions_per_dim, hidden_dim).to(device)
         self.critic = Critic(state_dim, hidden_dim).to(device)
         
         # Initialize optimizers
@@ -192,13 +207,16 @@ class PPOTrainer:
     ) -> Tuple[torch.Tensor, torch.Tensor, float]:
         """Compute PPO loss for both actor and critic."""
         # Get current policy distribution
-        mean, log_std = self.actor(states)
-        std = log_std.exp()
-        dist = Normal(mean, std)
+        # mean, log_std = self.actor(states)
+        # std = log_std.exp()
+        # dist = Normal(mean, std)
+        probs = self.actor(states)
         
         # Compute new log probs and entropy
-        new_log_probs = dist.log_prob(actions).sum(dim=-1)
-        entropy = dist.entropy().mean()
+        # new_log_probs = dist.log_prob(actions).sum(dim=-1)
+        # entropy = dist.entropy().mean()
+        new_log_probs = torch.log(probs.clamp(min=1e-8))
+        entropy = -(probs * new_log_probs).sum(dim=-1).mean()
         
         # Compute ratio and clipped surrogate loss
         ratio = torch.exp(new_log_probs - old_log_probs)
@@ -278,6 +296,28 @@ class PPOTrainer:
             'kl_div': avg_kl_div
         }
     
+    def sample_action(self, probs: torch.Tensor) -> Tuple[np.ndarray, float]:
+        """Sample action from discrete probability distribution."""
+        # Reshape probs to [batch_size, n_actions_per_dim] for each action dimension
+        probs = probs.squeeze(0)  # Remove batch dimension
+        
+        # Sample action indices for each dimension
+        action_indices = torch.multinomial(probs, 1).squeeze(-1)
+        print(f"Action indices: {action_indices}")
+        print(f"Action indices shape: {np.shape(action_indices)}")
+        # Convert indices to actual action valuesnp.l
+        actions = np.array([
+            self.action_values[i][idx.item()]
+            for i, idx in enumerate(action_indices)
+        ])
+        actions = actions.flatten()
+        print(f"Actions: {actions}")
+        print(f"Action bounds: {self.action_bounds}")
+        # Calculate log probability
+        log_prob = torch.log(probs[range(len(action_indices)), action_indices]).sum().item()
+        
+        return actions, log_prob
+
     def collect_rollout(self, max_steps: int = 2048) -> Tuple[np.ndarray, ...]:
         """Collect a rollout of experiences."""
         states = []
@@ -300,25 +340,27 @@ class PPOTrainer:
             
             # Get action from policy
             with torch.no_grad():
-                mean, log_std = self.actor(state_tensor)
-                std = log_std.exp()
-                dist = Normal(mean, std)
-                action = dist.sample()
-                log_prob = dist.log_prob(action).sum(dim=-1)
+                probs = self.actor(state_tensor)
+                action, log_prob = self.sample_action(probs)
                 value = self.critic(state_tensor)
             
             # Take action in environment
             opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])
-            next_state, reward, terminated, truncated, info = self.env.step(np.stack([action.cpu().numpy()[0], opponent_action], axis=0))
+            print(f"Action shape: {np.shape(action)}, Opponent action shape: {np.shape(opponent_action)}")
+            
+            # Stack actions with proper shape
+            combined_action = np.stack([action, opponent_action], axis=0)
+            
+            next_state, reward, terminated, truncated, info = self.env.step(combined_action)
             next_state = next_state['state']  # Extract state from observation dict
             done = terminated or truncated  # TODO: This is incorrect. Should use terminated. 
             
             # Store experience
             states.append(state)
-            actions.append(action.cpu().numpy()[0])
+            actions.append(action)
             rewards.append(reward)
             values.append(value.cpu().numpy()[0])
-            log_probs.append(log_prob.cpu().numpy()[0])
+            log_probs.append(log_prob)
             dones.append(done)
             
             current_episode_reward += reward
@@ -401,12 +443,10 @@ class PPOTrainer:
         with torch.no_grad():
             while not truncated:
                 state_tensor = torch.FloatTensor(state['state']).unsqueeze(0).to(self.device)
-                mean, log_std = self.actor(state_tensor)
-                std = log_std.exp()
-                dist = Normal(mean, std)
-                action = dist.sample()
-                opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])  # If using self-play, use a copy of the policy to derive opponent action
-                state, reward, terminated, truncated, info = self.env.step(np.stack([action.cpu().numpy()[0], opponent_action], axis=0))
+                probs = self.actor(state_tensor)
+                action, _ = self.sample_action(probs)
+                opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])
+                state, reward, terminated, truncated, info = self.env.step(np.stack([action, opponent_action], axis=0))
                 min_rel_dist = min(min_rel_dist, info['relative_distance'])
                 episode_reward += reward
         
@@ -432,6 +472,9 @@ class PPOTrainer:
     
     def save_model(self, filename: str):
         """Save the model."""
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        
         torch.save({
             'actor_state_dict': self.actor.state_dict(),
             'critic_state_dict': self.critic.state_dict(),
