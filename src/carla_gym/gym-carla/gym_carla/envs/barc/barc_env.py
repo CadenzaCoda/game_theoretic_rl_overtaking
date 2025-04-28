@@ -751,7 +751,8 @@ class BarcEnvRace(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, track_name, opponent: 'PIDWrapper', t0=0., dt=0.1, dt_sim=0.01, max_n_laps=100,
-                 do_render=False, enable_camera=True, host='localhost', port=2000):
+                 do_render=False, enable_camera=True, host='localhost', port=2000, discrete_action: bool = False):
+        self.discrete_action = discrete_action
         self.track_obj = get_track(track_name)
         self.opponent = opponent
         # Fixed to 2 vehicles for racing
@@ -815,9 +816,15 @@ class BarcEnvRace(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 9,), dtype=np.float32)
         # Fixed action space for 2 vehicles
         self._action_bounds = np.array([2, 0.45])
-        self.action_space = spaces.Box(low=-self._action_bounds,
-                                       high=self._action_bounds,
-                                       dtype=np.float32)
+        if discrete_action:
+            # self.action_space = spaces.Discrete(np.array([2, 0.45]).reshape(2))
+            u_a_space = np.linspace(-2, 2, 10, endpoint=True)
+            u_steer_space = np.linspace(-0.45, 0.45, 10, endpoint=True)
+            self.action_space = spaces.MultiDiscrete([len(u_a_space), len(u_steer_space)])
+        else:
+            self.action_space = spaces.Box(low=-self._action_bounds,
+                                           high=self._action_bounds,
+                                           dtype=np.float32)
 
         self.t = None
         self.max_lap_speed = self.min_lap_speed = self._sum_lap_speed = self.eps_len = 0

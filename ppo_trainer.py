@@ -13,6 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 import time
 import datetime
 import pdb
+
 # Actor Network
 class Actor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
@@ -310,7 +311,7 @@ class PPOTrainer:
             opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])
             next_state, reward, terminated, truncated, info = self.env.step(np.stack([action.cpu().numpy()[0], opponent_action], axis=0))
             next_state = next_state['state']  # Extract state from observation dict
-            done = terminated or truncated
+            done = terminated or truncated  # TODO: This is incorrect. Should use terminated. 
             
             # Store experience
             states.append(state)
