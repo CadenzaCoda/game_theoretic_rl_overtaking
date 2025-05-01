@@ -6,6 +6,7 @@ import torch.optim as optim
 from numpy import floating
 from tqdm import trange
 
+import random
 from gym_carla.controllers.barc_pid import PIDWrapper
 from loguru import logger
 import os
@@ -15,8 +16,22 @@ from torch.distributions import Distribution, Categorical, Normal
 import torch.nn.functional as F
 import time
 import datetime
+from pathlib import Path
 
 from mpclab_common.track import get_track
+
+from torch.distributions import register_kl
+
+
+def seed_everything(seed: int):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.mps.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 class MultiCategorical(Distribution):
@@ -50,6 +65,13 @@ class MultiCategorical(Distribution):
         """Return the mode (argmax) of each categorical."""
         modes = [torch.argmax(logits, dim=-1) for logits in self.split_logits]
         return torch.stack(modes, dim=-1)
+    
+
+@register_kl(MultiCategorical, MultiCategorical)
+def _kl_multi(m1, m2):
+    # sum of per-dim KLs
+    return sum(torch.distributions.kl_divergence(d1, d2)
+               for d1, d2 in zip(m1.categoricals, m2.categoricals))
 
 
 # Actor Network
@@ -258,7 +280,10 @@ class PPOTrainer:
             dist = Normal(mean, std)
 
         # Compute new log probs and entropy
-        new_log_probs = dist.log_prob(actions).sum(dim=-1)
+        if self.discrete:
+            new_log_probs = dist.log_prob(actions)
+        else:
+            new_log_probs = dist.log_prob(actions).sum(dim=-1)
         entropy = dist.entropy().mean()
 
         # Compute ratio and clipped surrogate loss
@@ -381,7 +406,7 @@ class PPOTrainer:
             actions.append(action)
             rewards.append(reward)
             values.append(value.cpu().numpy()[0])
-            log_probs.append(log_prob)
+            log_probs.append(log_prob.cpu().numpy())
             # dones.append(done)
             dones.append(terminated)
             
@@ -498,24 +523,28 @@ class PPOTrainer:
     def save_model(self, filename: str):
         """Save the model."""
         # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        checkpoint_root = Path.cwd() / 'checkpoints'
+        os.makedirs(checkpoint_root, exist_ok=True)
         
         torch.save({
             'actor_state_dict': self.actor.state_dict(),
             'critic_state_dict': self.critic.state_dict(),
             'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
             'critic_optimizer_state_dict': self.critic_optimizer.state_dict()
-        }, filename)
-        logger.info(f"Model saved to {filename}")
+        }, checkpoint_root / filename)
+        logger.info(f"Model saved to {checkpoint_root / filename}")
     
     def load_model(self, filename: str):
         """Load the model."""
-        checkpoint = torch.load(filename)
+        checkpoint_root = Path.cwd() / 'checkpoints'
+        if not (checkpoint_root / filename).exists():
+            raise ValueError(f"Checkpoint {checkpoint_root / filename} doesn't exist!")
+        checkpoint = torch.load(checkpoint_root / filename)
         self.actor.load_state_dict(checkpoint['actor_state_dict'])
         self.critic.load_state_dict(checkpoint['critic_state_dict'])
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
-        logger.info(f"Model loaded from {filename}")
+        logger.info(f"Model loaded from {checkpoint_root / filename}")
         
     def close(self):
         """Close TensorBoard writer."""
@@ -525,8 +554,11 @@ if __name__ == "__main__":
     # Create trainer with custom log directory
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('-m', '--comment', type=str, default='experimental')
     params = parser.parse_args()
+
+    seed_everything(params.seed)
 
     env_name = "barc-v1-race"
     track_name = "L_track_barc"
@@ -544,5 +576,5 @@ if __name__ == "__main__":
     try:
         trainer.train(num_iterations=1000, max_steps=2048) 
     finally:
-        trainer.save_model('checkpoints/ppo.pth')
+        trainer.save_model('ppo_latest.pth')
         trainer.close()  # Close TensorBoard writer
