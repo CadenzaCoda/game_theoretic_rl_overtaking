@@ -87,8 +87,8 @@ class BarcEnvRace(gym.Env):
         # Fixed action space for 2 vehicles
         self._action_bounds = np.array([2, 0.45], dtype=np.float32)
         if self.discrete:
-            self.u_a_space = np.linspace(-2, 2, 10, endpoint=True, dtype=np.float32)
-            self.u_steer_space = np.linspace(-0.45, 0.45, 10, endpoint=True, dtype=np.float32)  # Note: The choices are fixed for now. (10x10)
+            self.u_a_space = np.linspace(-2, 2, 32, endpoint=True, dtype=np.float32)
+            self.u_steer_space = np.linspace(-0.45, 0.45, 32, endpoint=True, dtype=np.float32)  # Note: The choices are fixed for now. (10x10)
             self.action_space = spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
         else:
             self.u_a_space = None
@@ -265,7 +265,7 @@ class BarcEnvRace(gym.Env):
         truncated = truncated or self._get_truncated()
         info = self._get_info()
 
-        if terminated:
+        if self._is_successful():
             logger.debug(
                 f"Overtaking successful in {info['lap_time']:.1f} s. "
                 f"avg_v = {info['avg_eps_speed']:.4f}, max_v = {info['max_eps_speed']:.4f}, "
@@ -274,8 +274,8 @@ class BarcEnvRace(gym.Env):
         return obs, rew, terminated, truncated, info
 
     def render(self):
-        if not self.do_render:
-            return
+        # if not self.do_render:
+        #     return
         self.visualizer.step(self.sim_state)
 
     def _get_obs(self) -> np.ndarray:
@@ -402,6 +402,8 @@ class BarcEnvRace(gym.Env):
         return {
             'vehicle_state': copy.deepcopy(self.sim_state),  # Ground truth vehicle state.
             'terminated': self._is_new_lap(),
+            'success': self._is_successful(),
+            'failure': self._is_failure(),
             'avg_eps_speed': self._sum_eps_speed / self.eps_len,  # Mean velocity of the current lap.
             'max_eps_speed': self.max_eps_speed,  # Max velocity of the current lap.
             'min_eps_speed': self.min_eps_speed,  # Min velocity of the current lap.
@@ -416,7 +418,7 @@ class BarcEnvRace(gym.Env):
         for i in range(2):
             if self._is_new_lap()[i] and self.sim_state[i].p.s < self.last_state[i].p.s:
                 self.lap_no[i] += 1
-                logger.info(f"Lap {self.lap_no[i]} completed by vehicle {i}.")
+                # logger.info(f"Lap {self.lap_no[i]} completed by vehicle {i}.")
 
         # Calculate relative distance in s-coordinate
         s_diff = self.sim_state[1].p.s - self.sim_state[0].p.s

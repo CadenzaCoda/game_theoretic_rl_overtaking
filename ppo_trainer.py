@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from numpy import floating
+from tqdm import trange
 
 from gym_carla.controllers.barc_pid import PIDWrapper
 from loguru import logger
@@ -24,8 +25,8 @@ class MultiCategorical(Distribution):
 
     def __init__(self, logits: torch.Tensor, nvec: list):
         super().__init__(batch_shape=logits.shape[:-1], event_shape=torch.Size([len(nvec)]))
-        self.nvec = nvec
-        self.split_logits = torch.split(logits, nvec, dim=-1)
+        self.nvec = list(nvec)
+        self.split_logits = torch.split(logits, self.nvec, dim=-1)
         self.categoricals = [Categorical(logits=logit) for logit in self.split_logits]
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
@@ -70,7 +71,7 @@ class Actor(nn.Module):
         
     def forward(self, state: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         x = self.net(state)
-        if self.discrete:
+        if not self.discrete:
             mean, log_std = torch.chunk(x, 2, dim=-1)
             log_std = torch.clamp(log_std, -20, 2)  # Prevent too small or large std.
             return mean, log_std  # These are the mean and log_std for Normal distributions.
@@ -273,7 +274,7 @@ class PPOTrainer:
         total_loss = actor_loss + 0.5 * value_loss - 0.01 * entropy
         
         # Compute approximate KL divergence
-        kl_div = ((old_log_probs - new_log_probs) ** 2).mean().item()
+        kl_div = (old_log_probs - new_log_probs).mean().item()
         
         return total_loss, value_loss, kl_div
     
@@ -353,7 +354,7 @@ class PPOTrainer:
         episode_rewards = []
         current_episode_reward = 0
         
-        for _ in range(max_steps):
+        for _ in trange(max_steps, desc='Collect'):
             # Convert state to tensor
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             
@@ -366,10 +367,11 @@ class PPOTrainer:
                     mean, log_std = self.actor(state_tensor)
                     std = log_std.exp()
                     dist = Normal(mean, std)
-                action = dist.sample().cpu().numpy()
+                action = dist.sample()
                 log_prob = dist.log_prob(action).sum(dim=-1)
                 value = self.critic(state_tensor)
 
+            action = action.detach().cpu().numpy()[0]
             next_state, reward, terminated, truncated, info = self.env.step(action)
             # next_state = next_state['state']  # Extract state from observation dict
             # done = terminated or truncated  # This is incorrect. Should use terminated.
@@ -460,9 +462,9 @@ class PPOTrainer:
         episode_reward = 0
         
         with torch.no_grad():
-            while not truncated:
+            while not truncated and not terminated:
                 state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-                if self.discrete:
+                if not self.discrete:
                     mean, log_std = self.actor(state_tensor)
                     dist = Normal(mean, log_std.exp())
                 else:
@@ -477,7 +479,7 @@ class PPOTrainer:
         self.writer.add_scalar('eval/episode_reward', episode_reward, self.episode_count)
         self.writer.add_scalar('eval/min_relative_distance', min_rel_dist, self.episode_count)
         
-        if terminated:
+        if info['success']:
             self.success_count += 1
             logger.info(f"Successful overtaking! Episode {self.episode_count}")
             self.writer.add_scalar('eval/success', 1, self.episode_count)
@@ -529,7 +531,8 @@ if __name__ == "__main__":
     env_name = "barc-v1-race"
     track_name = "L_track_barc"
     opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
-    env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False)  # Initializing the env outside the trainer makes more sense.
+    env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False,
+                   discrete_action=True)  # Initializing the env outside the trainer makes more sense.
 
     trainer = PPOTrainer(
         env=env,
