@@ -273,7 +273,7 @@ class PPOTrainer:
         # Compute total loss
         total_loss = actor_loss + 0.5 * value_loss - 0.01 * entropy
         
-        # Compute approximate KL divergence
+        # Compute approximate KL divergence via Monte Carlo
         kl_div = (old_log_probs - new_log_probs).mean().item()
         
         return total_loss, value_loss, kl_div

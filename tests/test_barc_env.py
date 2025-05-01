@@ -31,7 +31,7 @@ def barc_env_with_continuous_action():
 def test_discrete_action_space_dimension(barc_env_with_discrete_action):
     env = barc_env_with_discrete_action
     env.reset()
-    assert (env.action_space.nvec == np.array([10, 10])).all(), "Discrete action space dimension is incorrect"
+    assert (env.action_space.nvec == np.array([32, 32])).all(), "Discrete action space dimension is incorrect"
 
 
 def test_decode_action_discrete(barc_env_with_discrete_action):
@@ -39,8 +39,8 @@ def test_decode_action_discrete(barc_env_with_discrete_action):
     env.reset()
     # env.unwrapped.u_a_space = [0.0, 0.5, 1.0]
     # env.unwrapped.u_steer_space = [-1.0, 0.0, 1.0]
-    u_a_space = np.linspace(-2, 2, 10, endpoint=True, dtype=np.float32)
-    u_steer_space = np.linspace(-0.45, 0.45, 10, endpoint=True, dtype=np.float32)
+    u_a_space = np.linspace(-2, 2, 32, endpoint=True, dtype=np.float32)
+    u_steer_space = np.linspace(-0.45, 0.45, 32, endpoint=True, dtype=np.float32)
     action = [3, 9]
     result = env.unwrapped.decode_action(action)
     expected = np.array([u_a_space[action[0]], u_steer_space[action[1]]])
