@@ -7,7 +7,7 @@ import gym_carla
 from gym_carla.controllers.barc_pid import PIDWrapper
 from loguru import logger
 import os
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union, Any
 from torch.utils.tensorboard import SummaryWriter
 import time
 import datetime

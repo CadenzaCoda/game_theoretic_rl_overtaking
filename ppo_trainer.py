@@ -310,7 +310,7 @@ class PPOTrainer:
         old_log_probs: np.ndarray,
         advantages: np.ndarray,
         returns: np.ndarray,
-    ) -> dict[str, floating[Any]]:
+    ) -> Dict[str, float]:
         """Perform one step of PPO training."""
         # Convert to tensors and move to device
         states = torch.FloatTensor(states).to(self.device)
@@ -374,12 +374,11 @@ class PPOTrainer:
         dones = []
         
         state, info = self.env.reset()
-        # state = state['state']  # Extract state from observation dict
         
         episode_rewards = []
         current_episode_reward = 0
         
-        for _ in trange(max_steps, desc='Collect'):
+        for _ in range(max_steps):  # Removed trange to disable progress bar
             # Convert state to tensor
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             
@@ -398,16 +397,13 @@ class PPOTrainer:
 
             action = action.detach().cpu().numpy()[0]
             next_state, reward, terminated, truncated, info = self.env.step(action)
-            # next_state = next_state['state']  # Extract state from observation dict
-            # done = terminated or truncated  # This is incorrect. Should use terminated.
-
+            
             # Store experience
             states.append(state)
             actions.append(action)
             rewards.append(reward)
             values.append(value.cpu().numpy()[0])
             log_probs.append(log_prob.cpu().numpy())
-            # dones.append(done)
             dones.append(terminated)
             
             current_episode_reward += reward
@@ -416,7 +412,6 @@ class PPOTrainer:
                 episode_rewards.append(current_episode_reward)
                 current_episode_reward = 0
                 state, info = self.env.reset()
-                # state = state['state']
             else:
                 state = next_state
 
