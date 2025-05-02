@@ -104,7 +104,7 @@ class BarcEnvRace(gym.Env):
         self.low_speed_threshold = 0.25
         self.wrong_direction_threshold = np.pi / 2
         self.collision_threshold = 0.3
-        self.overtake_margin = 0.5
+        self.overtake_margin = -0.5
 
     def decode_action(self, action):
         if not self.discrete:
