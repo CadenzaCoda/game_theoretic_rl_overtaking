@@ -13,7 +13,7 @@ try:
     from barc3d.pytypes import VehicleState as VehicleState3D
 except ModuleNotFoundError:
     import warnings
-    warnings.warn("Barc3d is not available.")
+    # warnings.warn("Barc3d is not available.")
     barc3d_is_available = False
 
 if barc3d_is_available:

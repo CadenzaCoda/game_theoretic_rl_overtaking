@@ -2,11 +2,8 @@ import gymnasium as gym
 import numpy as np
 import time
 
-import gym_carla
-
-from controllers.barc_lmpc import LMPCWrapper
-from controllers.barc_pid import PIDWrapper
-from controllers.barc_mpcc_conv import MPCCConvWrapper
+from gym_carla.controllers.barc_lmpc import LMPCWrapper
+from gym_carla.controllers.barc_mpcc_conv import MPCCConvWrapper
 from loguru import logger
 
 

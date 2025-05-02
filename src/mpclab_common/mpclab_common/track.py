@@ -19,7 +19,7 @@ try:
     from mpclab_common.tracks.surface_lib import _get_visualization_surface, _get_identified_surface
 except ImportError:
     import warnings
-    warnings.warn("surface_lib functions import failed, possibly due to the absense of barc3d package.")
+    # warnings.warn("surface_lib functions import failed, possibly due to the absense of barc3d package.")
     pass
 
 def get_available_tracks():

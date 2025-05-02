@@ -3036,7 +3036,7 @@ try:
     from barc3d.surfaces.base_surface import BaseSurface
 except ImportError:
     import warnings
-    warnings.warn("barc3d related package import failed.")
+    # warnings.warn("barc3d related package import failed.")
     barc3d_is_available = False
 
 from scipy.spatial.transform import Rotation
