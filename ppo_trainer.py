@@ -557,6 +557,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--evaluation', action='store_true')
+    parser.add_argument('--n_epochs', type=int, default=1000)
+    parser.add_argument('--max_steps', type=int, default=2048)
+    parser.add_argument('--resume', type=int, default=-1)
     parser.add_argument('-m', '--comment', type=str, default='experimental')
     params = parser.parse_args()
 
@@ -564,6 +567,7 @@ if __name__ == "__main__":
 
     env_name = "barc-v1-race"
     track_name = "L_track_barc"
+    model_name = "ppo-mpcc"
     # opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
     opponent = MPCCConvWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
     env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False,
@@ -571,19 +575,23 @@ if __name__ == "__main__":
 
     trainer = PPOTrainer(
         env=env,
-        model_name="ppo-mpcc",
+        model_name=model_name,
         comment=params.comment
     )
     
     if params.evaluation:
-        raise UserWarning("Change the weight files first!")
-        trainer.load_model('ppo_model_800_barc-v1-race_ppo.pt')
-        for _ in range(10):
+        # raise UserWarning("Change the weight files first!")
+        trainer.load_model('ppo_model_1000_barc-v1-race_ppo-mpcc.pt')
+        # trainer.load_model(f'ppo_{params.comment}_latest.pth')
+        for _ in range(25):
             trainer.evaluate_agent()
         exit(0)
     # Train the agent
     try:
-        trainer.train(num_iterations=1000, max_steps=2048) 
+        if params.resume > 0:
+            trainer.load_model(f"ppo_model_{params.resume}_{env_name}_{model_name}.pt")
+            trainer.episode_count = params.resume
+        trainer.train(num_iterations=params.n_epochs, max_steps=params.max_steps) 
     finally:
-        trainer.save_model('ppo_latest.pth')
+        trainer.save_model(f'ppo_{params.comment}_latest.pth')
         trainer.close()  # Close TensorBoard writer

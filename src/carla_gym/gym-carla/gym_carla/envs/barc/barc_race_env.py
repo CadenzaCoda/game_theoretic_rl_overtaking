@@ -17,7 +17,7 @@ from gym_carla.controllers.barc_pid import PIDWrapper
 
 
 class BarcEnvRace(gym.Env):
-    def __init__(self, track_name, opponent: Optional['PIDWrapper'] = None, t0=0., dt=0.1, dt_sim=0.01,
+    def __init__(self, track_name='L_track_barc', opponent: Optional['PIDWrapper'] = None, t0=0., dt=0.1, dt_sim=0.01,
                  max_steps = 300, do_render=False, discrete_action: bool = False,
                  enable_camera=False, host='localhost', port=2000):
         self.max_steps = None
@@ -188,8 +188,8 @@ class BarcEnvRace(gym.Env):
                                                             x_tran=np.random.uniform(
                                                                 -self.track_obj.half_width / 2,
                                                                 self.track_obj.half_width / 2),
-                                                            e_psi=np.random.uniform(-np.pi / 6, np.pi / 6), ),
-                                           v=BodyLinearVelocity(v_long=np.random.uniform(0.5, 2), v_tran=0),
+                                                            e_psi=np.random.uniform(-np.pi / 12, np.pi / 12), ),
+                                           v=BodyLinearVelocity(v_long=np.random.uniform(0.5, 0.6), v_tran=0),
                                            w=BodyAngularVelocity(w_psi=0)) for i in range(2)]
         for _state in self.sim_state:
             self.track_obj.local_to_global_typed(_state)
@@ -304,7 +304,7 @@ class BarcEnvRace(gym.Env):
         safe_distance_min = 0.5
         reward_progress_decay = 0.95
 
-        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s) * reward_progress_decay ** self.eps_len
+        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s)  # * reward_progress_decay ** self.eps_len
 
         physical_distance = np.linalg.norm([
             self.sim_state[0].x.x - self.sim_state[1].x.x,
