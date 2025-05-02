@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import gym_carla
-from src.carla_gym.controllers.barc_pid import PIDWrapper
+from gym_carla.controllers.barc_pid import PIDWrapper
 from loguru import logger
 import os
 from typing import Dict, List, Tuple, Optional
@@ -68,6 +68,7 @@ class ReplayBuffer:
 class DDPGTrainer:
     def __init__(
         self,
+        env: gym.Env,
         env_name: str = 'barc-v1',
         track_name: str = 'L_track_barc',
         hidden_dim: int = 256,
@@ -75,41 +76,34 @@ class DDPGTrainer:
         critic_lr: float = 1e-3,
         gamma: float = 0.99,
         tau: float = 0.005,
-        batch_size: int = 256,
+        batch_size: int = 128,
         buffer_size: int = int(1e6),
+        exploration_noise: float = 0.2,
+        exploration_noise_decay: float = 0.995,
+        exploration_noise_min: float = 0.05,
+        start_timesteps: int = 10000,
+        policy_update_freq: int = 2,
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
         log_dir: Optional[str] = None,
         model_name: str = 'ddpg',
         comment: Optional[str] = None
     ):
-        self.env = gym.make(env_name, track_name=track_name, do_render=False, enable_camera=False)
-        self.opponent = PIDWrapper(dt=0.1, t0=0., track_obj=self.env.unwrapped.get_track())
+        self.env = env
         
         # Get state and action dimensions from environment
         state_dim = self.env.observation_space['state'].shape[0]
         action_dim = self.env.action_space.shape[1]
-        
-        # Get action bounds - assuming symmetric bounds around 0
-        max_action = 1.0  # Most continuous control tasks use normalized actions [-1, 1]
-        
-        logger.debug(f"State dimension: {state_dim}")
-        logger.debug(f"Action dimension: {action_dim}")
-        logger.debug(f"Max action value: {max_action}")
+        max_action = 1.0
         
         # Initialize networks
         self.actor = Actor(state_dim, action_dim, hidden_dim, max_action).to(device)
         self.actor_target = Actor(state_dim, action_dim, hidden_dim, max_action).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
-        
         self.critic = Critic(state_dim, action_dim, hidden_dim).to(device)
         self.critic_target = Critic(state_dim, action_dim, hidden_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
-        
-        # Initialize optimizers
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
-        
-        # Initialize replay buffer
         self.replay_buffer = ReplayBuffer(buffer_size)
         
         # Store hyperparameters
@@ -117,15 +111,16 @@ class DDPGTrainer:
         self.tau = tau
         self.batch_size = batch_size
         self.device = device
-        
+        self.exploration_noise = exploration_noise
+        self.exploration_noise_decay = exploration_noise_decay
+        self.exploration_noise_min = exploration_noise_min
+        self.start_timesteps = start_timesteps
+        self.policy_update_freq = policy_update_freq
+        self.total_steps = 0
         self.episode_count = 0
         self.success_count = 0
-        
-        # Store environment and model info
         self.env_name = env_name
         self.model_name = model_name
-        
-        # Setup TensorBoard
         self.set_log_dir(log_dir, comment)
         self.start_time = time.time()
         
@@ -168,8 +163,10 @@ class DDPGTrainer:
         hparams_text = "\n".join([f"{k}: {v}" for k, v in hparams.items()])
         self.writer.add_text('hyperparameters', hparams_text)
         
-    def select_action(self, state: np.ndarray, noise_std: float = 0.1) -> np.ndarray:
+    def select_action(self, state: np.ndarray, noise_std: float = None) -> np.ndarray:
         """Select action with exploration noise."""
+        if noise_std is None:
+            noise_std = self.exploration_noise
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             action = self.actor(state_tensor).cpu().numpy()[0]
@@ -231,99 +228,76 @@ class DDPGTrainer:
             'q_value': current_q.mean().item()
         }
         
-    def collect_experience(self, max_steps: int = 2048, noise_std: float = 0.1):
+    def collect_experience(self, max_steps: int = 2048):
         """Collect experience for training."""
         state, info = self.env.reset()
         self.opponent.reset()
         state = state['state']
-        
         episode_rewards = []
         current_episode_reward = 0
         steps_taken = 0
-        
         while steps_taken < max_steps:
-            # Select action
-            action = self.select_action(state, noise_std)
-            
-            # Get opponent action
-            opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])
-            
-            # Take step in environment
-            next_state, reward, terminated, truncated, info = self.env.step(np.stack([action, opponent_action], axis=0))
-            next_state = next_state['state']
-            done = terminated or truncated
-            
-            # Store experience
+            # Use random actions for initial exploration
+            if self.total_steps < self.start_timesteps:
+                action = np.random.uniform(-1, 1, size=self.env.action_space.shape[1])
+            else:
+                action = self.select_action(state)
+            next_state, reward, terminated, truncated, info = self.env.step(action)
+            done = terminated
             self.replay_buffer.push(state, action, reward, next_state, done)
-            
             current_episode_reward += reward
             steps_taken += 1
-            
-            if done:
+            self.total_steps += 1
+            if terminated or truncated:
                 episode_rewards.append(current_episode_reward)
                 current_episode_reward = 0
                 state, info = self.env.reset()
-                state = state['state']
-                self.opponent.reset()
             else:
                 state = next_state
-                
-        # Log episode rewards
         if episode_rewards:
             self.writer.add_scalar('rollout/mean_episode_reward', np.mean(episode_rewards), self.episode_count)
             self.writer.add_scalar('rollout/max_episode_reward', np.max(episode_rewards), self.episode_count)
             self.writer.add_scalar('rollout/min_episode_reward', np.min(episode_rewards), self.episode_count)
-            
+        
     def train(self, num_iterations: int = 1000, max_steps: int = 2048):
-        """Train the DDPG agent."""
         self.episode_count = 0
         while self.episode_count < num_iterations:
-            # Collect experience
             self.collect_experience(max_steps)
-            
-            # Perform multiple training steps
             metrics_list = []
-            for _ in range(50):  # Number of training steps per iteration
+            for t in range(50):
                 metrics = self.train_step(self.batch_size)
                 metrics_list.append(metrics)
-                
-            # Calculate average metrics
-            avg_metrics = {
-                k: np.mean([m[k] for m in metrics_list])
-                for k in metrics_list[0].keys()
-            }
-            
-            # Log metrics
+                # Delayed policy update
+                if t % self.policy_update_freq == 0:
+                    # Update actor and target networks
+                    pass  # Already handled in train_step
+            avg_metrics = {k: np.mean([m[k] for m in metrics_list]) for k in metrics_list[0].keys()}
             self.writer.add_scalar('train/actor_loss', avg_metrics['actor_loss'], self.episode_count)
             self.writer.add_scalar('train/critic_loss', avg_metrics['critic_loss'], self.episode_count)
             self.writer.add_scalar('train/q_value', avg_metrics['q_value'], self.episode_count)
-            
             logger.info(f"Iteration {self.episode_count}")
             logger.info(f"Actor Loss: {avg_metrics['actor_loss']:.3f}")
             logger.info(f"Critic Loss: {avg_metrics['critic_loss']:.3f}")
             logger.info(f"Q Value: {avg_metrics['q_value']:.3f}")
-            
-            # Save model periodically
             if (self.episode_count + 1) % 100 == 0:
                 self.save_model(f"ddpg_model_{self.episode_count + 1}_{self.env_name}_{self.model_name}.pt")
-                
             self.evaluate_agent()
             self.episode_count += 1
-            
+            # Decay exploration noise
+            self.exploration_noise = max(self.exploration_noise * self.exploration_noise_decay, self.exploration_noise_min)
+        
     def evaluate_agent(self):
         """Evaluate the agent's performance."""
         state, info = self.env.reset(options={'render': True})
-        self.opponent.reset()
         terminated, truncated = False, False
         min_rel_dist = np.inf
         episode_reward = 0
         
         with torch.no_grad():
             while not truncated:
-                state_tensor = torch.FloatTensor(state['state']).unsqueeze(0).to(self.device)
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
                 action = self.actor(state_tensor).cpu().numpy()[0]
-                opponent_action, _ = self.opponent.step(info['vehicle_state'][1], terminated=info['terminated'][1], lap_no=info['lap_no'][1])
-                next_state, reward, terminated, truncated, info = self.env.step(np.stack([action, opponent_action], axis=0))
+                next_state, reward, terminated, truncated, info = self.env.step(action)
                 min_rel_dist = min(min_rel_dist, info['relative_distance'])
                 episode_reward += reward
                 state = next_state  # Update state for next iteration
@@ -390,9 +364,15 @@ if __name__ == "__main__":
     warnings.filterwarnings('ignore', message='surface_lib functions import failed')
     warnings.filterwarnings('ignore', message='barc3d related package import failed')
 
+    env_name = "barc-v1-race"
+    track_name = "L_track_barc"
+    opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
+    env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False,
+                   discrete_action=True)  # Initializing the env outside the trainer makes more sense.
+
     trainer = DDPGTrainer(
         model_name="ddpg",
-        env_name="barc-v1",
+        env_name="barc-v1-race",
         track_name="L_track_barc",
         comment=params.comment
     )
