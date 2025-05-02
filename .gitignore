@@ -11,3 +11,6 @@ logs
 **/*.pt
 checkpoints
 runs
+**/carla
+.gitignore
+ppo_trainer_old.py
