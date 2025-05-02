@@ -171,7 +171,6 @@ class BarcEnvRace(gym.Env):
             self.visualizer.reset()
         elif self.visualizer is not None:
             self.visualizer.close()
-        self.opponent.reset()
         if options is not None and options.get('spawning') == 'fixed':
             logger.debug("Respawning at fixed location.")
 
@@ -195,6 +194,7 @@ class BarcEnvRace(gym.Env):
         for _state in self.sim_state:
             self.track_obj.local_to_global_typed(_state)
         self.last_state = copy.deepcopy(self.sim_state)
+        self.opponent.reset(options={'vehicle_state': self.sim_state[1]})
 
         self.t = self.t0
         self.lap_start = self.t

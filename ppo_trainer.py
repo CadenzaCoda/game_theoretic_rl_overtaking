@@ -7,7 +7,8 @@ from numpy import floating
 from tqdm import trange
 
 import random
-from gym_carla.controllers.barc_pid import PIDWrapper
+# from gym_carla.controllers.barc_pid import PIDWrapper
+from gym_carla.controllers.barc_mpcc_conv import MPCCConvWrapper
 from loguru import logger
 import os
 from typing import Dict, Tuple, Optional, Union, Any
@@ -555,6 +556,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--evaluation', action='store_true')
     parser.add_argument('-m', '--comment', type=str, default='experimental')
     params = parser.parse_args()
 
@@ -562,16 +564,23 @@ if __name__ == "__main__":
 
     env_name = "barc-v1-race"
     track_name = "L_track_barc"
-    opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
+    # opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
+    opponent = MPCCConvWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
     env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False,
                    discrete_action=True)  # Initializing the env outside the trainer makes more sense.
 
     trainer = PPOTrainer(
         env=env,
-        model_name="ppo",
+        model_name="ppo-mpcc",
         comment=params.comment
     )
     
+    if params.evaluation:
+        raise UserWarning("Change the weight files first!")
+        trainer.load_model('ppo_model_800_barc-v1-race_ppo.pt')
+        for _ in range(10):
+            trainer.evaluate_agent()
+        exit(0)
     # Train the agent
     try:
         trainer.train(num_iterations=1000, max_steps=2048) 
