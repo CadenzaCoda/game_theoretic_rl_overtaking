@@ -15,6 +15,8 @@ import pdb
 from collections import deque
 import random
 
+from mpclab_common.track import get_track
+
 # Actor Network for DDPG
 class Actor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256, max_action: float = 1.0):
@@ -91,16 +93,29 @@ class DDPGTrainer:
         self.env = env
         
         # Get state and action dimensions from environment
-        state_dim = self.env.observation_space['state'].shape[0]
-        action_dim = self.env.action_space.shape[1]
+        state_dim = self.env.observation_space.shape[0]
+        if isinstance(self.env.action_space, gym.spaces.MultiDiscrete):
+            self.n_logits = self.env.action_space.nvec
+            self.action_dim = len(self.env.action_space.nvec)
+            self.discrete = True
+        elif isinstance(self.env.action_space, gym.spaces.Discrete):
+            self.n_logits = np.array([self.env.action_space.n])
+            self.action_dim = 1
+            self.discrete = True
+        elif isinstance(self.env.action_space, gym.spaces.Box):
+            self.n_logits = None
+            self.action_dim = self.env.action_space.shape[0]
+            self.discrete = False
+        else:
+            raise NotImplementedError(f"Unsupported action space: {self.env.action_space}")
         max_action = 1.0
         
         # Initialize networks
-        self.actor = Actor(state_dim, action_dim, hidden_dim, max_action).to(device)
-        self.actor_target = Actor(state_dim, action_dim, hidden_dim, max_action).to(device)
+        self.actor = Actor(state_dim, self.action_dim, hidden_dim, max_action).to(device)
+        self.actor_target = Actor(state_dim, self.action_dim, hidden_dim, max_action).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
-        self.critic = Critic(state_dim, action_dim, hidden_dim).to(device)
-        self.critic_target = Critic(state_dim, action_dim, hidden_dim).to(device)
+        self.critic = Critic(state_dim, self.action_dim, hidden_dim).to(device)
+        self.critic_target = Critic(state_dim, self.action_dim, hidden_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
@@ -231,15 +246,13 @@ class DDPGTrainer:
     def collect_experience(self, max_steps: int = 2048):
         """Collect experience for training."""
         state, info = self.env.reset()
-        self.opponent.reset()
-        state = state['state']
         episode_rewards = []
         current_episode_reward = 0
         steps_taken = 0
         while steps_taken < max_steps:
             # Use random actions for initial exploration
             if self.total_steps < self.start_timesteps:
-                action = np.random.uniform(-1, 1, size=self.env.action_space.shape[1])
+                action = np.random.uniform(-1, 1, size=self.action_dim)
             else:
                 action = self.select_action(state)
             next_state, reward, terminated, truncated, info = self.env.step(action)
@@ -294,7 +307,7 @@ class DDPGTrainer:
         episode_reward = 0
         
         with torch.no_grad():
-            while not truncated:
+            while not truncated and not terminated:
                 state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
                 action = self.actor(state_tensor).cpu().numpy()[0]
                 next_state, reward, terminated, truncated, info = self.env.step(action)
@@ -306,7 +319,7 @@ class DDPGTrainer:
         self.writer.add_scalar('eval/episode_reward', episode_reward, self.episode_count)
         self.writer.add_scalar('eval/min_relative_distance', min_rel_dist, self.episode_count)
         
-        if terminated:
+        if info['success']:
             self.success_count += 1
             logger.info(f"Successful overtaking! Episode {self.episode_count}")
             self.writer.add_scalar('eval/success', 1, self.episode_count)
@@ -368,9 +381,10 @@ if __name__ == "__main__":
     track_name = "L_track_barc"
     opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
     env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False,
-                   discrete_action=True)  # Initializing the env outside the trainer makes more sense.
+                   discrete_action=False)  # Initializing the env outside the trainer makes more sense.
 
     trainer = DDPGTrainer(
+        env=env,
         model_name="ddpg",
         env_name="barc-v1-race",
         track_name="L_track_barc",
