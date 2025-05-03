@@ -28,7 +28,6 @@ class Actor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()  # Output in [-1, 1]
         )
         
     def forward(self, state: torch.Tensor) -> torch.Tensor:
@@ -212,11 +211,11 @@ class DDPGTrainer:
         # Compute target Q value
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
-            target_q = self.critic_target(next_states, next_actions)
+            target_q = self.critic_target(next_states, next_actions).squeeze(1)
             target_q = rewards + (1 - dones) * self.gamma * target_q
             
         # Update critic
-        current_q = self.critic(states, actions)
+        current_q = self.critic(states, actions).squeeze(1)
         critic_loss = nn.MSELoss()(current_q, target_q)
         
         self.critic_optimizer.zero_grad()
