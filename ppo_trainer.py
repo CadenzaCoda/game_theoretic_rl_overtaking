@@ -311,7 +311,7 @@ class PPOTrainer:
         old_log_probs: np.ndarray,
         advantages: np.ndarray,
         returns: np.ndarray,
-    ) -> dict[str, floating[Any]]:
+    ):
         """Perform one step of PPO training."""
         # Convert to tensors and move to device
         states = torch.FloatTensor(states).to(self.device)
