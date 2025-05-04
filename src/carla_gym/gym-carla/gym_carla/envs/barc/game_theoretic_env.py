@@ -12,13 +12,19 @@ import numpy as np
 from gymnasium.core import ObsType
 from networkx.algorithms.clique import enumerate_all_cliques
 from gymnasium import spaces
+
+from mpclab_simulation.dynamics_simulator import DynamicsSimulator
 # import gym_carla
 # from gym_carla.envs.barc.multibarc_env import MultiBarcEnv
 from .multibarc_env import MultiBarcEnv
+from mpclab_common.models.dynamics_models import CasadiDynamicBicycle
 from gym_carla.controllers.barc_pid import PIDWrapper
 
 from loguru import logger
 import pdb
+
+from mpclab_common.models.dynamics_models import get_dynamics_model
+from gym_carla.controllers.barc_pid_ref_tracking import PIDRacelineFollowerWrapper
 
 
 class GameTheoreticEnv(MultiBarcEnv):
@@ -33,7 +39,11 @@ class GameTheoreticEnv(MultiBarcEnv):
         super().__init__(track_name=track_name, **kwargs)
         logger.debug("GameTheoreticEnv init")
         # self.opp_grid    = self.get_action_grids(num_bins_per_dim=10)
-        self.opponent = opponent if opponent is not None else PIDWrapper(t0=0., dt=0.1, track_obj=self.track_obj)
+        dynamics_config_approx = copy.deepcopy(self.sim_dynamics_config)
+        dynamics_config_approx.dt = self.dt
+        dynamics_config_approx.model_name = 'dynamic_bicycle_cl'
+        self.dynamics = get_dynamics_model(t_start=self.t0, model_config=dynamics_config_approx, track=self.track_obj)
+        self.opponent = PIDRacelineFollowerWrapper(t0=0., dt=0.1, track_obj=self.track_obj)
         self.K = sample_k
 
     def reset(
@@ -44,6 +54,8 @@ class GameTheoreticEnv(MultiBarcEnv):
     ) -> Tuple[ObsType, dict]:
         obs, info = super().reset(seed=seed, options=options)
         self.opponent.reset(options={'vehicle_state': self.sim_state[1]})
+        if (options is not None and options.get('render')) or self.do_render:
+            self.opponent.raceline.plot_raceline(self.visualizer.ax_xy)
         return obs, info
 
     def _get_reward(self, last_obs=None, ego_action=None, opp_action=None) -> Tuple[float, float]:
@@ -83,9 +95,13 @@ class GameTheoreticEnv(MultiBarcEnv):
         #     ego_action, ego_probs = action_dist
         # else:
         ego_action, ego_dist = action
-        ego_action_samples = ego_dist.sample([self.K])
-        # ego_probs = np.ones(len(self.ego_grid)) / len(self.ego_grid)
-        # idxs = np.random.choice(len(self.ego_grid), size=self.K, p=ego_probs)
+        ego_action_samples = ego_dist.sample([self.K]).squeeze(1).cpu().numpy()
+        ego_next_states = self.dynamics.predict(self.sim_state[0],
+                                                ego_action_samples)  # v_long, v_tran, w_psi, e_psi, s, x_tran
+        ego_x_tran_median = np.median(ego_next_states[:, -1])
+        ego_v_long_median = np.median(ego_next_states[:, 0])
+        reaction_strength = min(np.exp(-self.rel_dist), 1.)
+        # logger.debug(f"ego_x_tran_median: {ego_x_tran_median}, ego_v_long_median: {ego_v_long_median}, reaction_strength: {reaction_strength}")
         saved = (
             copy.deepcopy(self.sim_state),
             copy.deepcopy(self.last_state),
@@ -93,40 +109,42 @@ class GameTheoreticEnv(MultiBarcEnv):
             self.last_rel_dist,
             self.eps_len
         )
+        a_opp, _ = self.opponent.step(self.sim_state[1], lap_no=self.lap_no[1],
+                                      terminated=self._is_new_lap()[1],
+                                      reference_modifier=(ego_v_long_median, ego_x_tran_median, reaction_strength))
+        #
+        # a_opp, best_opp_rew = None, -np.inf
+        # # Try nominal opponent action.
 
-        a_opp, best_opp_rew = None, -np.inf
-        # Try nominal opponent action.
-        opponent_action, _ = self.opponent.step(self.sim_state[1], lap_no=self.lap_no[1],
-                                                terminated=self._is_new_lap()[1])
-        u_a_eps_scale, u_steer_eps_scale = 0.1, 0.1
-        eps_u_a, eps_u_steer = (np.linspace(-self._action_bounds[0], self._action_bounds[0], 3, endpoint=True) * u_a_eps_scale,
-                                np.linspace(-self._action_bounds[1], self._action_bounds[1], 3, endpoint=True) * u_steer_eps_scale)
-        eps_grid = np.array(np.meshgrid(eps_u_a, eps_u_steer, indexing='ij')).reshape(2, -1).T
-
-        for a_e in ego_action_samples:
-            # a_e = self.ego_grid[idx]
-            # apply candidate joint action
-            for i, s in enumerate(self.sim_state):
-                s.u.u_a, s.u.u_steer = (a_e[0] if i == 0 else opponent_action)
-            # simulate one step with error handling
-            physical_distance = np.linalg.norm(
-                np.array(self.sim_state[0].x.x, self.sim_state[0].x.y) - \
-                np.array(self.sim_state[1].x.x, self.sim_state[1].x.y)
-            )
-            if physical_distance > self.collision_threshold * 2:
-                # If the resulting distance is above a threshold, apply the nominal action directly.
-                a_opp = opponent_action
-            else:
-                # Otherwise, search locally for an optimal opponent action.
-                for eps_u_a, eps_u_steer in eps_grid:
-                    self.sim_state[1] = copy.deepcopy(saved[0][1])
-                    _a_opp = np.clip(np.array([eps_u_a, eps_u_steer]) + opponent_action, -self._action_bounds,
-                                     self._action_bounds)
-                    self.sim_state[1].u.u_a, self.sim_state[1].u.u_steer = _a_opp
-                    self.dynamics_simulator[1].step(self.sim_state[1], T=self.dt)
-                    opp_rew = self._get_reward()[1]
-                    if opp_rew > best_opp_rew:
-                        best_opp_rew, a_opp = opp_rew, _a_opp
+        # u_a_eps_scale, u_steer_eps_scale = 0.1, 0.1
+        # eps_u_a, eps_u_steer = (np.linspace(-self._action_bounds[0], self._action_bounds[0], 3, endpoint=True) * u_a_eps_scale,
+        #                         np.linspace(-self._action_bounds[1], self._action_bounds[1], 3, endpoint=True) * u_steer_eps_scale)
+        # eps_grid = np.array(np.meshgrid(eps_u_a, eps_u_steer, indexing='ij')).reshape(2, -1).T
+        #
+        # for a_e in ego_action_samples:
+        #     # a_e = self.ego_grid[idx]
+        #     # apply candidate joint action
+        #     for i, s in enumerate(self.sim_state):
+        #         s.u.u_a, s.u.u_steer = (a_e[0] if i == 0 else opponent_action)
+        #     # simulate one step with error handling
+        #     physical_distance = np.linalg.norm(
+        #         np.array(self.sim_state[0].x.x, self.sim_state[0].x.y) - \
+        #         np.array(self.sim_state[1].x.x, self.sim_state[1].x.y)
+        #     )
+        #     if physical_distance > self.collision_threshold * 2:
+        #         # If the resulting distance is above a threshold, apply the nominal action directly.
+        #         a_opp = opponent_action
+        #     else:
+        #         # Otherwise, search locally for an optimal opponent action.
+        #         for eps_u_a, eps_u_steer in eps_grid:
+        #             self.sim_state[1] = copy.deepcopy(saved[0][1])
+        #             _a_opp = np.clip(np.array([eps_u_a, eps_u_steer]) + opponent_action, -self._action_bounds,
+        #                              self._action_bounds)
+        #             self.sim_state[1].u.u_a, self.sim_state[1].u.u_steer = _a_opp
+        #             self.dynamics_simulator[1].step(self.sim_state[1], T=self.dt)
+        #             opp_rew = self._get_reward()[1]
+        #             if opp_rew > best_opp_rew:
+        #                 best_opp_rew, a_opp = opp_rew, _a_opp
 
         (self.sim_state, self.last_state,
          self.rel_dist, self.last_rel_dist,

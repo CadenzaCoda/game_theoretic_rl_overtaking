@@ -41,23 +41,23 @@ class MultiBarcEnv(gym.Env):
         VL = 0.37
         VW = 0.195
 
-        sim_dynamics_config = DynamicBicycleConfig(dt=dt_sim,
-                                                   model_name='dynamic_bicycle',
-                                                   noise=False,
-                                                   discretization_method='rk4',
-                                                   simple_slip=False,
-                                                   tire_model='pacejka',
-                                                   mass=2.2187,
-                                                   yaw_inertia=0.02723,
-                                                   wheel_friction=0.9,
-                                                   pacejka_b_front=5.0,
-                                                   pacejka_b_rear=5.0,
-                                                   pacejka_c_front=2.28,
-                                                   pacejka_c_rear=2.28)
+        self.sim_dynamics_config = DynamicBicycleConfig(dt=dt_sim,
+                                                        model_name='dynamic_bicycle',
+                                                        noise=False,
+                                                        discretization_method='rk4',
+                                                        simple_slip=False,
+                                                        tire_model='pacejka',
+                                                        mass=2.2187,
+                                                        yaw_inertia=0.02723,
+                                                        wheel_friction=0.9,
+                                                        pacejka_b_front=5.0,
+                                                        pacejka_b_rear=5.0,
+                                                        pacejka_c_front=2.28,
+                                                        pacejka_c_rear=2.28)
 
         # Create exactly 2 dynamics simulators
         self.dynamics_simulator = [
-            DynamicsSimulator(t0, sim_dynamics_config, delay=None, track=self.track_obj) for _ in range(2)
+            DynamicsSimulator(t0, self.sim_dynamics_config, delay=None, track=self.track_obj) for _ in range(2)
         ]
 
         if enable_camera:
@@ -256,7 +256,7 @@ class MultiBarcEnv(gym.Env):
 
     def render(self):
         # if not self.do_render:
-            # return
+        # return
         self.visualizer.step(self.sim_state)
 
     def _get_obs(self) -> np.ndarray:
@@ -285,7 +285,8 @@ class MultiBarcEnv(gym.Env):
         safe_distance_min = 0.5
         reward_progress_decay = 0.95
 
-        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s)  # * reward_progress_decay ** self.eps_len
+        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[
+            0].p.s)  # * reward_progress_decay ** self.eps_len
 
         physical_distance = np.linalg.norm([
             self.sim_state[0].x.x - self.sim_state[1].x.x,
@@ -300,7 +301,8 @@ class MultiBarcEnv(gym.Env):
 
         catching_up_reward = k_catching_up * (self.last_rel_dist - self.rel_dist)  # Reward for catching up
         if physical_distance < safe_distance_min:
-            proximity_penalty = -k_relative * (safe_distance_min - physical_distance)  # Penalty for being too close to the opponent
+            proximity_penalty = -k_relative * (
+                        safe_distance_min - physical_distance)  # Penalty for being too close to the opponent
         else:
             proximity_penalty = 0
         return reward_progress + catching_up_reward + proximity_penalty + boundary_penalty + speed_penalty - 0.1
@@ -418,7 +420,6 @@ class MultiBarcEnv(gym.Env):
                 self.rel_dist -= self.track_obj.track_length
             else:
                 self.rel_dist += self.track_obj.track_length
-
 
     # def _get_obs(self) -> Dict[str, np.ndarray]:
     #     # For backward compatibility, use the first vehicle's state for gps and velocity

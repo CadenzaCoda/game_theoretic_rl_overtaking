@@ -36,12 +36,12 @@ class MPCCConvWrapper:
 
         self.state_input_ub = VehicleState(x=Position(x=1e9, y=1e9),
                                            e=OrientationEuler(psi=10),
-                                           v=BodyLinearVelocity(v_long=2.5, v_tran=2),
+                                           v=BodyLinearVelocity(v_long=4.0, v_tran=2),
                                            w=BodyAngularVelocity(w_psi=7),
                                            u=VehicleActuation(u_a=2.0, u_steer=0.45))
         self.state_input_lb = VehicleState(x=Position(x=-1e9, y=-1e9),
                                            e=OrientationEuler(psi=-10),
-                                           v=BodyLinearVelocity(v_long=-2.5, v_tran=-2),
+                                           v=BodyLinearVelocity(v_long=-4.0, v_tran=-2),
                                            w=BodyAngularVelocity(w_psi=-7),
                                            u=VehicleActuation(u_a=-2.0, u_steer=-0.45))
         self.input_rate_max = VehicleState(u=VehicleActuation(u_a=40.0, u_steer=4.5))
@@ -62,10 +62,10 @@ class MPCCConvWrapper:
                                        contouring_cost_N=0.1,
                                        lag_cost=1000.0,
                                        lag_cost_N=1000.0,
-                                       performance_cost=0.035,
+                                       performance_cost=0.03,
                                        vs_cost=1e-4,
                                        vs_rate_cost=1e-3,
-                                       vs_max=3.0,  # 5.0,
+                                       vs_max=4.5,  # 5.0,
                                        vs_min=0.0,
                                        vs_rate_max=5.0,
                                        vs_rate_min=-5.0,
