@@ -20,10 +20,12 @@ class MultiBarcEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, track_name, t0=0., dt=0.1, dt_sim=0.01, max_n_laps=5, max_steps=300,
-                 do_render=False, enable_camera=True, host='localhost', port=2000):
+                 do_render=False, enable_camera=True, host='localhost', port=2000,
+                 discrete_action: bool = False):
         self.track_obj = get_track(track_name)
         # Fixed to 2 vehicles for racing
         self.n_vehicles = 2
+        self.discrete = discrete_action
         # self.track_obj.slack = 1
         self.t0 = t0  # Constant
         self.dt = dt
@@ -85,9 +87,16 @@ class MultiBarcEnv(gym.Env):
         # Fixed action space for 2 vehicles
         # self._action_bounds = np.tile(np.array([2, 0.45]), [2, 1])
         self._action_bounds = np.array([2, 0.45])
-        self.action_space = spaces.Box(low=-self._action_bounds,
-                                       high=self._action_bounds,
-                                       dtype=np.float64)
+        if self.discrete:
+            self.u_a_space = np.linspace(-2, 2, 32, endpoint=True, dtype=np.float32)
+            self.u_steer_space = np.linspace(-0.45, 0.45, 32, endpoint=True, dtype=np.float32)  # Note: The choices are fixed for now. (10x10)
+            self.action_space = spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
+        else:
+            self.u_a_space = None
+            self.u_steer_space = None
+            self.action_space = spaces.Box(low=-self._action_bounds,
+                                           high=self._action_bounds,
+                                           dtype=np.float32)
 
         self.t = None
         self.max_eps_speed = self.min_eps_speed = self._sum_eps_speed = self.eps_len = 0
@@ -96,6 +105,11 @@ class MultiBarcEnv(gym.Env):
         self.low_speed_threshold = 0.25
         self.wrong_direction_threshold = np.pi / 2
         self.overtake_margin = -0.5
+
+    def decode_action(self, action):
+        if not self.discrete:
+            raise ValueError
+        return np.array([self.u_a_space[action[0]], self.u_steer_space[action[1]]])
 
     def get_track(self):
         return self.track_obj
@@ -208,6 +222,8 @@ class MultiBarcEnv(gym.Env):
         self.max_eps_speed = self.min_eps_speed = self._sum_eps_speed = v
 
     def step(self, action: ActType) -> Tuple[ObsType, float, bool, bool, dict]:
+        if self.discrete:
+            action = self.decode_action(action)
         action = np.clip(action, -self._action_bounds, self._action_bounds)
 
         # Apply actions to each vehicle
@@ -311,6 +327,12 @@ class MultiBarcEnv(gym.Env):
         """
         Episode terminates when the agent successfully overtakes the opponent
         """
+        # Check for out of track
+        for i, state in enumerate(self.sim_state[1:]):
+            if np.abs(state.p.x_tran) > self.track_obj.half_width:
+                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
+                return True
+        
         # Check if agent has overtaken the opponent using relative distance
         was_behind = self.last_rel_dist >= self.overtake_margin
         is_ahead = self.rel_dist < self.overtake_margin
@@ -353,11 +375,7 @@ class MultiBarcEnv(gym.Env):
         3) Any vehicle other than ego is going too slow (< 0.25)
         4) Any vehicle other than ego is going in the wrong way (e.psi > pi/2)
         """
-        # Check for out of track
-        for i, state in enumerate(self.sim_state[1:]):
-            if np.abs(state.p.x_tran) > self.track_obj.half_width:
-                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
-                return True
+        
 
         # Check for maximum time steps (assuming max_steps is defined in __init__)
         # if hasattr(self, 'max_steps') and self.eps_len >= self.max_steps:

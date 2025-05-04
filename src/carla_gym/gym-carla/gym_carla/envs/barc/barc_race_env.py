@@ -328,6 +328,12 @@ class BarcEnvRace(gym.Env):
         """
         Episode terminates when the agent successfully overtakes the opponent
         """
+        # Check for opponent out of track
+        for i, state in enumerate(self.sim_state[1:]):
+            if np.abs(state.p.x_tran) > self.track_obj.half_width:
+                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
+                return True
+            
         # Check if agent has overtaken the opponent using relative distance
         was_behind = self.last_rel_dist >= self.overtake_margin
         is_ahead = self.rel_dist < self.overtake_margin
@@ -370,12 +376,6 @@ class BarcEnvRace(gym.Env):
         3) Any vehicle other than ego is going too slow (< 0.25)
         4) Any vehicle other than ego is going in the wrong way (e.psi > pi/2)
         """
-        # Check for out of track
-        for i, state in enumerate(self.sim_state[1:]):
-            if np.abs(state.p.x_tran) > self.track_obj.half_width:
-                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
-                return True
-
         # Check for maximum time steps (assuming max_steps is defined in __init__)
         # if hasattr(self, 'max_steps') and self.eps_len >= self.max_steps:
         #     return True

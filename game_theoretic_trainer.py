@@ -176,8 +176,9 @@ def main():
     parser.add_argument('--n_epochs', type=int, default=1000)
     parser.add_argument('--max_steps', type=int, default=2048)
     parser.add_argument('-m', '--comment', default='game_theoretic')
-    parser.add_argument('--sample_k', type=int, default=32)
+    parser.add_argument('--sample_k', type=int, default=8)
     parser.add_argument('--bins', type=int, default=5)
+    parser.add_argument('--evaluation', action='store_true')
     args = parser.parse_args()
 
     seed_everything(args.seed)
@@ -198,7 +199,8 @@ def main():
                       sample_k=args.sample_k,
                       do_render=False,
                       enable_camera=False,
-                      dt=0.1, dt_sim=0.01, max_steps=300
+                      dt=0.1, dt_sim=0.01, max_steps=300,
+                      discrete_action=True,
                       )
 
     # wrap so PPO sees only 'state' and ego reward
@@ -227,6 +229,13 @@ def main():
                              env_name='barc-v2',
                              model_name='ppo-game-theoretic',
                              comment=args.comment)
+
+    if args.evaluation:
+        raise UserWarning("Change the weight files first!")
+        trainer.load_model('ppo_model_1900_barc-v1-race_ppo-mpcc.pt')
+        for _ in range(25):
+            trainer.evaluate_agent()
+        exit(0)
     try:
         trainer.train(num_iterations=args.n_epochs, max_steps=args.max_steps)
     finally:

@@ -96,19 +96,22 @@ class GameTheoreticEnv(MultiBarcEnv):
         # else:
         ego_action, ego_dist = action
         ego_action_samples = ego_dist.sample([self.K]).squeeze(1).cpu().numpy()
-        ego_next_states = self.dynamics.predict(self.sim_state[0],
+        if self.discrete:
+            ego_action_samples = [self.decode_action(action) for action in ego_action_samples]
+        # print(ego_action_samples)
+        ego_next_states = self.dynamics.predict(copy.deepcopy(self.sim_state[0]),
                                                 ego_action_samples)  # v_long, v_tran, w_psi, e_psi, s, x_tran
         ego_x_tran_median = np.median(ego_next_states[:, -1])
         ego_v_long_median = np.median(ego_next_states[:, 0])
-        reaction_strength = min(np.exp(-self.rel_dist), 1.)
+        reaction_strength = np.exp(-abs(self.rel_dist - self.collision_threshold * 2))
         # logger.debug(f"ego_x_tran_median: {ego_x_tran_median}, ego_v_long_median: {ego_v_long_median}, reaction_strength: {reaction_strength}")
-        saved = (
-            copy.deepcopy(self.sim_state),
-            copy.deepcopy(self.last_state),
-            self.rel_dist,
-            self.last_rel_dist,
-            self.eps_len
-        )
+        # saved = (
+        #     copy.deepcopy(self.sim_state),
+        #     copy.deepcopy(self.last_state),
+        #     self.rel_dist,
+        #     self.last_rel_dist,
+        #     self.eps_len
+        # )
         a_opp, _ = self.opponent.step(self.sim_state[1], lap_no=self.lap_no[1],
                                       terminated=self._is_new_lap()[1],
                                       reference_modifier=(ego_v_long_median, ego_x_tran_median, reaction_strength))
@@ -146,15 +149,59 @@ class GameTheoreticEnv(MultiBarcEnv):
         #             if opp_rew > best_opp_rew:
         #                 best_opp_rew, a_opp = opp_rew, _a_opp
 
-        (self.sim_state, self.last_state,
-         self.rel_dist, self.last_rel_dist,
-         self.eps_len) = saved
+        # (self.sim_state, self.last_state,
+        #  self.rel_dist, self.last_rel_dist,
+        #  self.eps_len) = saved
 
-        joint = np.vstack([ego_action, a_opp])
-        obs, ego_r, term, trunc, info = super().step(joint)
-        ego_r2, opp_r = self._get_reward()
+        action = np.vstack([ego_action, a_opp])
+        action = np.clip(action, -self._action_bounds, self._action_bounds)
+
+        # Apply actions to each vehicle
+        for i, _state in enumerate(self.sim_state):
+            _state.u.u_a, _state.u.u_steer = action[i]
+
+        self.last_state = copy.deepcopy(self.sim_state)
+        self.last_rel_dist = self.rel_dist  # Store the previous relative distance
+        self.render()
+
+        terminated = False
+        try:
+            self.dynamics_simulator[0].step(self.sim_state[0], T=self.dt)
+            self.track_obj.global_to_local_typed(self.sim_state[0])
+        except ValueError as e:
+            terminated = True
+
+        truncated = False
+        try:
+            # Step each vehicle's dynamics
+            for i, _state in enumerate(self.sim_state[1:]):
+                self.dynamics_simulator[i].step(_state, T=self.dt)
+                self.track_obj.global_to_local_typed(_state)
+        except ValueError as e:
+            truncated = True  # The control action may drive the vehicle out of the track during the internal steps.
+
+        # Update relative distance and lap counters
+        self._update_relative_distance()
+
+        self.t += self.dt
+        self._update_speed_stats()
+
+        obs = self._get_obs()
+        rew = self._get_reward()
+        terminated = terminated or self._get_terminal()
+        truncated = truncated or self._get_truncated()
+        info = self._get_info()
+
+        if self._is_successful():
+            logger.debug(
+                f"Overtaking successful in {info['lap_time']:.1f} s. "
+                f"avg_v = {info['avg_eps_speed']:.4f}, max_v = {info['max_eps_speed']:.4f}, "
+                f"min_v = {info['min_eps_speed']:.4f}")
+
+        # return obs, rew, terminated, truncated, info
+        ego_r2, opp_r = rew
         info['opp_reward'] = opp_r
-        return obs, (ego_r2, opp_r), term, trunc, info
+        return obs, (ego_r2, opp_r), terminated, truncated, info
     #
     # def _get_obs(self) -> np.ndarray:
     #     obs = super()._get_obs()
