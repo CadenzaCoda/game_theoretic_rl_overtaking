@@ -15,8 +15,7 @@ from ppo_trainer import PPOTrainer, seed_everything, MultiCategorical
 from torch.distributions import Normal
 from tqdm import trange
 
-
-# import ppo_trainer
+from loguru import logger
 
 
 class PPOGameTrainer(PPOTrainer):
@@ -96,6 +95,45 @@ class PPOGameTrainer(PPOTrainer):
             np.array(dones),
             final_value
         )
+
+    def evaluate_agent(self):
+        state, info = self.env.reset(options={'render': True})
+        terminated, truncated = False, False
+        min_rel_dist = np.inf
+        episode_reward = 0
+
+        with torch.no_grad():
+            while not truncated and not terminated:
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+                if not self.discrete:
+                    mean, log_std = self.actor(state_tensor)
+                    dist = Normal(mean, log_std.exp())
+                else:
+                    logits = self.actor(state_tensor)
+                    dist = MultiCategorical(logits, self.n_logits)
+                action = dist.sample().cpu().numpy()[0]
+                state, reward, terminated, truncated, info = self.env.step((action, dist))
+                min_rel_dist = min(min_rel_dist, info['relative_distance'])
+                episode_reward += reward
+
+        # Log evaluation metrics
+        self.writer.add_scalar('eval/episode_reward', episode_reward, self.episode_count)
+        self.writer.add_scalar('eval/min_relative_distance', min_rel_dist, self.episode_count)
+
+        if info['success']:
+            self.success_count += 1
+            logger.info(f"Successful overtaking! Episode {self.episode_count}")
+            self.writer.add_scalar('eval/success', 1, self.episode_count)
+        else:
+            logger.info(f"Failed to overtake. Episode {self.episode_count}")
+            logger.info(f"Min relative distance: {min_rel_dist}")
+            self.writer.add_scalar('eval/success', 0, self.episode_count)
+        logger.info(f"Success rate: {self.success_count}/{self.episode_count + 1}")
+
+        # Log training time
+        elapsed_time = time.time() - self.start_time
+        self.writer.add_scalar('time/elapsed_seconds', elapsed_time, self.episode_count)
+        self.writer.add_scalar('time/episodes_per_second', self.episode_count / elapsed_time, self.episode_count)
 
 
 # from gym_carla.envs.barc.game_theoretic_env import GameTheoreticEnv
