@@ -121,6 +121,7 @@ class PPOTrainer:
     def __init__(
         self,
         env: gym.Env,
+        env_name: str = 'barc-v1-race',
         hidden_dim: int = 256,
         learning_rate: float = 3e-4,
         gamma: float = 0.99,
@@ -575,6 +576,7 @@ if __name__ == "__main__":
 
     trainer = PPOTrainer(
         env=env,
+        env_name=env_name,
         model_name=model_name,
         comment=params.comment
     )

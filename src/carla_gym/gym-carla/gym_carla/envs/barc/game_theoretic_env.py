@@ -6,26 +6,47 @@ A MultiBarcEnv subclass where `step` returns a tuple of (ego_reward, opp_reward)
 and the underlying `_get_reward` is overridden to support dual rewards.
 """
 import copy
+from typing import Tuple, Optional
+
 import numpy as np
-from gym_carla.envs.barc.multibarc_env import MultiBarcEnv
+from gymnasium.core import ObsType
+from networkx.algorithms.clique import enumerate_all_cliques
+from gymnasium import spaces
+# import gym_carla
+# from gym_carla.envs.barc.multibarc_env import MultiBarcEnv
+from .multibarc_env import MultiBarcEnv
+from gym_carla.controllers.barc_pid import PIDWrapper
+
+from loguru import logger
+import pdb
 
 
 class GameTheoreticEnv(MultiBarcEnv):
     def __init__(
-        self,
-        track_name: str,
-        ego_action_grid: list,
-        opp_action_grid: list,
-        opp_reward_fn=None,
-        sample_k: int = 16,
-        **kwargs
+            self,
+            track_name: str,
+            opponent=None,
+            opp_reward_fn=None,
+            sample_k: int = 16,
+            **kwargs
     ):
         super().__init__(track_name=track_name, **kwargs)
-        self.ego_grid    = ego_action_grid
-        self.opp_grid    = opp_action_grid
-        self.K           = sample_k
+        logger.debug("GameTheoreticEnv init")
+        # self.opp_grid    = self.get_action_grids(num_bins_per_dim=10)
+        self.opponent = opponent if opponent is not None else PIDWrapper(t0=0., dt=0.1, track_obj=self.track_obj)
+        self.K = sample_k
 
-    def _get_reward(self, last_obs=None, ego_action=None, opp_action=None):
+    def reset(
+            self,
+            *,
+            seed: Optional[int] = None,
+            options: Optional[dict] = None,
+    ) -> Tuple[ObsType, dict]:
+        obs, info = super().reset(seed=seed, options=options)
+        self.opponent.reset(options={'vehicle_state': self.sim_state[1]})
+        return obs, info
+
+    def _get_reward(self, last_obs=None, ego_action=None, opp_action=None) -> Tuple[float, float]:
         """
         Returns a tuple (ego_reward, opp_reward) by calling the base reward logic
         on vehicle 0 and vehicle 1 respectively using state swapping.
@@ -56,14 +77,15 @@ class GameTheoreticEnv(MultiBarcEnv):
 
         return ego_r, opp_r
 
-    def step(self, action_input):
+    def step(self, action):
         # support raw action or (action, probs) tuple
-        if isinstance(action_input, tuple):
-            ego_action, ego_probs = action_input
-        else:
-            ego_action = action_input
-            ego_probs = np.ones(len(self.ego_grid)) / len(self.ego_grid)
-        idxs = np.random.choice(len(self.ego_grid), size=self.K, p=ego_probs)
+        # if isinstance(action_dist, tuple):
+        #     ego_action, ego_probs = action_dist
+        # else:
+        ego_action, ego_dist = action
+        ego_action_samples = ego_dist.sample([self.K])
+        # ego_probs = np.ones(len(self.ego_grid)) / len(self.ego_grid)
+        # idxs = np.random.choice(len(self.ego_grid), size=self.K, p=ego_probs)
         saved = (
             copy.deepcopy(self.sim_state),
             copy.deepcopy(self.last_state),
@@ -72,56 +94,51 @@ class GameTheoreticEnv(MultiBarcEnv):
             self.eps_len
         )
 
-        best_a_opp, best_val = None, -np.inf
-        for a_opp in self.opp_grid:
-            total = 0.0
-            for idx in idxs:
-                a_e = self.ego_grid[idx]
-                # apply candidate joint action
-                for i, s in enumerate(self.sim_state):
-                    s.u.u_a, s.u.u_steer = (a_e if i == 0 else a_opp)
-                # simulate one step with error handling
-                try:
-                    for sim, st in zip(self.dynamics_simulator, self.sim_state):
-                        sim.step(st, T=self.dt)
-                        self.track_obj.global_to_local_typed(st)
-                    self._update_relative_distance()
-                    self.eps_len += 1
+        a_opp, best_opp_rew = None, -np.inf
+        # Try nominal opponent action.
+        opponent_action, _ = self.opponent.step(self.sim_state[1], lap_no=self.lap_no[1],
+                                                terminated=self._is_new_lap()[1])
+        u_a_eps_scale, u_steer_eps_scale = 0.1, 0.1
+        eps_u_a, eps_u_steer = (np.linspace(-self._action_bounds[0], self._action_bounds[0], 3, endpoint=True) * u_a_eps_scale,
+                                np.linspace(-self._action_bounds[1], self._action_bounds[1], 3, endpoint=True) * u_steer_eps_scale)
+        eps_grid = np.array(np.meshgrid(eps_u_a, eps_u_steer, indexing='ij')).reshape(2, -1).T
 
-                    # compute opponent reward
-                    # After roll-out, swap vehicles for opponent reward
-                    self.sim_state[0], self.sim_state[1] = self.sim_state[1], self.sim_state[0]
-                    self.last_state[0], self.last_state[1] = self.last_state[1], self.last_state[0]
-                    self.rel_dist = -self.rel_dist
-                    self.last_rel_dist = -self.last_rel_dist
-                    opp_i = super()._get_reward()
-                    # Swap back after computing reward
-                    self.sim_state[0], self.sim_state[1] = self.sim_state[1], self.sim_state[0]
-                    self.last_state[0], self.last_state[1] = self.last_state[1], self.last_state[0]
-                    self.rel_dist = -self.rel_dist
-                    self.last_rel_dist = -self.last_rel_dist
-                except ValueError:
-                    # Off-track or invalid state → heavy penalty
-                    print(f"Invalid state: {self.sim_state}")
-                    opp_i = -100.0
-
-                total += opp_i
-                # restore saved state
-                (self.sim_state, self.last_state,
-                 self.rel_dist, self.last_rel_dist,
-                 self.eps_len) = saved
-            avg = total / self.K
-            if avg > best_val:
-                best_val, best_a_opp = avg, a_opp
+        for a_e in ego_action_samples:
+            # a_e = self.ego_grid[idx]
+            # apply candidate joint action
+            for i, s in enumerate(self.sim_state):
+                s.u.u_a, s.u.u_steer = (a_e[0] if i == 0 else opponent_action)
+            # simulate one step with error handling
+            physical_distance = np.linalg.norm(
+                np.array(self.sim_state[0].x.x, self.sim_state[0].x.y) - \
+                np.array(self.sim_state[1].x.x, self.sim_state[1].x.y)
+            )
+            if physical_distance > self.collision_threshold * 2:
+                # If the resulting distance is above a threshold, apply the nominal action directly.
+                a_opp = opponent_action
+            else:
+                # Otherwise, search locally for an optimal opponent action.
+                for eps_u_a, eps_u_steer in eps_grid:
+                    self.sim_state[1] = copy.deepcopy(saved[0][1])
+                    _a_opp = np.clip(np.array([eps_u_a, eps_u_steer]) + opponent_action, -self._action_bounds,
+                                     self._action_bounds)
+                    self.sim_state[1].u.u_a, self.sim_state[1].u.u_steer = _a_opp
+                    self.dynamics_simulator[1].step(self.sim_state[1], T=self.dt)
+                    opp_rew = self._get_reward()[1]
+                    if opp_rew > best_opp_rew:
+                        best_opp_rew, a_opp = opp_rew, _a_opp
 
         (self.sim_state, self.last_state,
          self.rel_dist, self.last_rel_dist,
          self.eps_len) = saved
 
-        joint = np.vstack([ego_action, best_a_opp])
+        joint = np.vstack([ego_action, a_opp])
         obs, ego_r, term, trunc, info = super().step(joint)
-        ego_r2, opp_r = self._get_reward(last_obs=obs,
-                                         ego_action=ego_action,
-                                         opp_action=best_a_opp)
+        ego_r2, opp_r = self._get_reward()
         info['opp_reward'] = opp_r
         return obs, (ego_r2, opp_r), term, trunc, info
+    #
+    # def _get_obs(self) -> np.ndarray:
+    #     obs = super()._get_obs()
+    #     # logger.debug(obs)
+    #     return obs
