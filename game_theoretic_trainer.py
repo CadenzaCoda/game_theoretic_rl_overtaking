@@ -5,6 +5,7 @@ game_theoretic_trainer.py
 Train a single PPO agent (ego) against the GameTheoreticEnv opponent.
 """
 import argparse
+import time
 from typing import Tuple
 
 import gymnasium as gym
