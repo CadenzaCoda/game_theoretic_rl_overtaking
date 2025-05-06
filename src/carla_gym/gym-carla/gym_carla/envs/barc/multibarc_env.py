@@ -18,10 +18,13 @@ from mpclab_simulation.dynamics_simulator import DynamicsSimulator
 
 class MultiBarcEnv(gym.Env):
     metadata = {'render.modes': ['human']}
+    AGENTS = ['ego', 'oppo']
 
     def __init__(self, track_name, t0=0., dt=0.1, dt_sim=0.01, max_n_laps=5, max_steps=300,
-                 do_render=False, enable_camera=True, host='localhost', port=2000):
+                 do_render=False, enable_camera=False, host='localhost', port=2000,
+                 discrete_action: bool = False):
         self.track_obj = get_track(track_name)
+        self.discrete = discrete_action
         # Fixed to 2 vehicles for racing
         self.n_vehicles = 2
         # self.track_obj.slack = 1
@@ -81,27 +84,26 @@ class MultiBarcEnv(gym.Env):
         self.last_rel_dist = 0.0
         self.lap_no = [0, 0]  # Track laps completed by each vehicle
 
-        observation_space = dict(
-            gps=spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
-            velocity=spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
-            state=spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 9,), dtype=np.float32),  # Fixed to 2 vehicles
+        observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 9,), dtype=np.float32)
+        self.observation_space = spaces.Dict(
+            {'ego': observation_space, 'oppo': observation_space}
         )
-        if self.enable_camera:
-            from gym_carla.envs.barc.cameras.carla_bridge import CarlaConnector
-            # All images are channel-first.
-            observation_space.update(dict(
-                camera=spaces.Box(low=0, high=255, shape=(self.camera_bridge.height, self.camera_bridge.width, 3),
-                                  dtype=np.uint8),
-                # depth=spaces.Box(low=0, high=255, shape=(3, H, W), dtype=np.uint8),
-                # imu=spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float64),
-            ))
-
-        self.observation_space = spaces.Dict(observation_space)
         # Fixed action space for 2 vehicles
         self._action_bounds = np.tile(np.array([2, 0.45]), [2, 1])
-        self.action_space = spaces.Box(low=-self._action_bounds,
-                                       high=self._action_bounds,
-                                       dtype=np.float64)
+        if self.discrete:
+            self.u_a_space = np.linspace(-2, 2, 32, endpoint=True, dtype=np.float32)
+            self.u_steer_space = np.linspace(-0.45, 0.45, 32, endpoint=True, dtype=np.float32)  # Note: The choices are fixed for now. (10x10)
+            self.action_space = spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
+        else:
+            self.u_a_space = None
+            self.u_steer_space = None
+            self.action_space = spaces.Box(low=-self._action_bounds,
+                                           high=self._action_bounds,
+                                           dtype=np.float32)
+
+        self.action_space = spaces.Dict(
+            {'ego': self.action_space, 'oppo': self.action_space}
+        )
 
         self.t = None
         self.max_lap_speed = self.min_lap_speed = self._sum_lap_speed = self.eps_len = 0
@@ -113,6 +115,12 @@ class MultiBarcEnv(gym.Env):
 
     def get_track(self):
         return self.track_obj
+
+    def decode_action(self, action):
+        if not self.discrete:
+            raise ValueError
+        assert action.shape == (2, 2)
+        return np.array([(self.u_a_space[_action[0]], self.u_steer_space[_action[1]]) for _action in action])
 
     def bind_controller(self, controller):
         self.visualizer.bind_controller(controller)
@@ -222,6 +230,9 @@ class MultiBarcEnv(gym.Env):
         self.max_lap_speed = self.min_lap_speed = self._sum_lap_speed = v
 
     def step(self, action: ActType) -> Tuple[ObsType, float, bool, bool, dict]:
+        action = np.array([action['ego'], action['oppo']])
+        if self.discrete:
+            action = self.decode_action(action)
         action = np.clip(action, -self._action_bounds, self._action_bounds)
 
         # Apply actions to each vehicle
@@ -232,14 +243,14 @@ class MultiBarcEnv(gym.Env):
         self.last_rel_dist = self.rel_dist  # Store the previous relative distance
         self.render()
 
-        truncated = False
+        terminated = False
         try:
             # Step each vehicle's dynamics
             for i, _state in enumerate(self.sim_state):
                 self.dynamics_simulator[i].step(_state, T=self.dt)
                 self.track_obj.global_to_local_typed(_state)
         except ValueError as e:
-            truncated = True  # The control action may drive the vehicle out of the track during the internal steps.
+            terminated = True  # The control action may drive the vehicle out of the track during the internal steps.
 
         # Update relative distance and lap counters
         self._update_relative_distance()
@@ -249,8 +260,8 @@ class MultiBarcEnv(gym.Env):
 
         obs = self._get_obs()
         rew = self._get_reward()
-        terminated = self._get_terminal()
-        truncated = truncated or self._get_truncated()
+        terminated = terminated or self._get_terminal()
+        truncated = self._get_truncated()
         info = self._get_info()
 
         if terminated:
@@ -263,66 +274,55 @@ class MultiBarcEnv(gym.Env):
             # self._reset_speed_stats()
             # self.eps_len = 1
 
-        return obs, rew, terminated, truncated, info
+        return obs, rew, {"ego": terminated, "oppo": terminated}, {"ego": truncated, "oppo": truncated}, self._get_info()
 
     def render(self):
         # if not self.do_render:
-            # return
+        # return
         self.visualizer.step(self.sim_state)
 
     def _get_obs(self) -> Dict[str, np.ndarray]:
         # For backward compatibility, use the first vehicle's state for gps and velocity
+        ob = np.array([[state.v.v_long, state.v.v_tran, state.w.w_psi,
+                             state.p.s, state.p.x_tran, state.p.e_psi,
+                             state.x.x, state.x.y, state.e.psi] for state in self.sim_state],
+                           dtype=np.float32).reshape(-1)
         ob = {
-            'gps': np.array([self.sim_state[0].x.x, self.sim_state[0].x.y, self.sim_state[0].e.psi], dtype=np.float32),
-            'velocity': np.array([self.sim_state[0].v.v_long, self.sim_state[0].v.v_tran, self.sim_state[0].w.w_psi],
-                                 dtype=np.float32),
-            'state': np.array([[state.v.v_long, state.v.v_tran, state.w.w_psi,
-                                state.p.s, state.p.x_tran, state.p.e_psi,
-                                state.x.x, state.x.y, state.e.psi] for state in self.sim_state],
-                              dtype=np.float32).reshape(-1),
+            "ego": ob,
+            "oppo": ob.copy()
         }
-        if self.enable_camera:
-            while True:
-                try:
-                    camera = self.camera_bridge.query_rgb(self.sim_state[0])
-                    break
-                except RuntimeError as e:
-                    logger.error(e)
-                from gym_carla.envs.barc.cameras.carla_bridge import CarlaConnector
-                while True:
-                    time.sleep(10)
-                    try:
-                        self.camera_bridge = CarlaConnector(self.track_name, self.host, self.port)
-                        break
-                    except RuntimeError as e:
-                        logger.error(e)
-            ob.update({
-                'camera': camera,
-                # 'depth': None,
-                # 'imu': None,
-            })
         return ob
 
-    def _get_reward(self) -> float:
+    def _get_reward(self) -> dict:
         # Check for collisions with track boundary
-        if np.abs(self.sim_state[0].p.x_tran) > self.track_obj.half_width:
-            return -100.0
+        # if np.abs(self.sim_state[0].p.x_tran) > self.track_obj.half_width:
+        if self._is_failure():
+            return {"ego": -100.0, "oppo": 100}
+        # elif np.abs(self.sim_state[1].p.x_tran) > self.track_obj.half_width:
+        if self._is_success():
+            return {"ego": 100, "oppo": -100.0}
+        if self._is_draw():
+            return {"ego": 0.0, "oppo": 0.0}
 
-        # Check for slow vehicles or wrong direction
-        if self.sim_state[0].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[0].p.e_psi) > self.wrong_direction_threshold:
-            return -100.0
+        # # Check for slow vehicles or wrong direction
+        # if self.sim_state[0].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[0].p.e_psi) > self.wrong_direction_threshold:
+        #     return {"ego": -100.0, "oppo": 0}
+        # elif self.sim_state[1].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[1].p.e_psi) > self.wrong_direction_threshold:
+        #     return {"ego": 0, "oppo": -100.0}
+        # elif (self.sim_state[0].v.v_long < 0.5 or np.abs(self.sim_state[0].p.e_psi) > np.pi / 2) and (self.sim_state[1].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[1].p.e_psi) > self.wrong_direction_threshold):
+        #     return {"ego": -100.0, "oppo": -100.0}
 
         # Check for collisions with opponent (simple distance-based check)
-        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.3:
-            return -100.0
+        # if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < 0.3:
+        #     return {"ego": 0.0, "oppo": 0.0}
 
         # Check for being very behind the opponent
-        if self.rel_dist > self.track_obj.track_length * 0.8:
-            return -100.0
+        # if self.rel_dist > self.track_obj.track_length * 0.8:
+        #     return {"ego": -100.0, "oppo": 100.0}
 
         # Reward for successful overtaking
-        if self._get_terminal():
-            return 100.0
+        # if self._get_terminal():
+        #     return {"ego": 100.0, "oppo": -100.0}
 
         k_progress = 1
         k_relative = 0.2  # 20 / (1 - 0.1) / 20
@@ -332,7 +332,8 @@ class MultiBarcEnv(gym.Env):
         safe_distance_min = 0.5
         reward_progress_decay = 0.95
 
-        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s) * reward_progress_decay ** self.eps_len
+        reward_progress_ego = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s)
+        reward_progress_oppo = k_progress * max(0, self.sim_state[1].p.s - self.last_state[1].p.s)
 
         physical_distance = np.linalg.norm([
             self.sim_state[0].x.x - self.sim_state[1].x.x,
@@ -340,27 +341,54 @@ class MultiBarcEnv(gym.Env):
         ])
 
         # Penalty for being too close to the boundary
-        boundary_penalty = -k_boundary * max(0, np.abs(self.sim_state[0].p.x_tran) / self.track_obj.half_width - 0.9)
+        boundary_penalty_ego = -k_boundary * max(0,
+                                                 np.abs(self.sim_state[0].p.x_tran) / self.track_obj.half_width - 0.9)
+        boundary_penalty_oppo = -k_boundary * max(0,
+                                                  np.abs(self.sim_state[1].p.x_tran) / self.track_obj.half_width - 0.9)
 
         # Penalty for being too slow
-        speed_penalty = -k_speed * max(0, 0.5 - self.sim_state[0].v.v_long)
+        speed_penalty_ego = -k_speed * max(0, 0.5 - self.sim_state[0].v.v_long)
+        speed_penalty_oppo = -k_speed * max(0, 0.5 - self.sim_state[1].v.v_long)
 
         catching_up_reward = k_catching_up * (self.last_rel_dist - self.rel_dist)  # Reward for catching up
         if physical_distance < safe_distance_min:
-            proximity_penalty = -k_relative * (safe_distance_min - physical_distance)  # Penalty for being too close to the opponent
+            proximity_penalty = -k_relative * (
+                        safe_distance_min - physical_distance)  # Penalty for being too close to the opponent
         else:
             proximity_penalty = 0
-        return reward_progress + catching_up_reward + proximity_penalty + boundary_penalty + speed_penalty - 0.1
+        return {
+            "ego": reward_progress_ego + catching_up_reward + proximity_penalty + boundary_penalty_ego + speed_penalty_ego - 0.1,
+            "oppo": reward_progress_oppo - catching_up_reward + proximity_penalty + boundary_penalty_oppo + speed_penalty_oppo - 0.1}
+
+    def _is_success(self) -> bool:
+        """
+        Check if the episode is successful (e.g., overtaking)
+        """
+        if np.abs(self.sim_state[1].p.x_tran) > self.track_obj.half_width:
+            # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
+            return True
+        was_behind = self.last_rel_dist >= self.overtake_margin
+        is_ahead = self.rel_dist < self.overtake_margin
+        return was_behind and is_ahead
+
+    def _is_failure(self) -> bool:
+        if np.abs(self.sim_state[0].p.x_tran) > self.track_obj.half_width:
+            # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
+            return True
+
+    def _is_draw(self) -> bool:
+        # Check for collision with opponent
+        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array(
+                [self.sim_state[1].x.x, self.sim_state[1].x.y])) < self.collision_threshold:
+            # logger.debug(f"Collision: {np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y]))}")
+            return True
 
     def _get_terminal(self) -> bool:
         """
         Episode terminates when the agent successfully overtakes the opponent
         """
         # Check if agent has overtaken the opponent using relative distance
-        was_behind = self.last_rel_dist >= self.overtake_margin
-        is_ahead = self.rel_dist < self.overtake_margin
-
-        return was_behind and is_ahead
+        return self._is_success() or self._is_failure() or self._is_draw()
 
     def _get_truncated(self) -> bool:
         """
@@ -371,22 +399,12 @@ class MultiBarcEnv(gym.Env):
         4) Any vehicle going too slow (< 0.25)
         5) Any vehicle going in the wrong way (e.psi > pi/2)
         """
-        # Check for successful overtaking (already handled by termination)
-        if self._get_terminal():
-            return True
-
-        # Check for out of track
-        for i, state in enumerate(self.sim_state):
-            if np.abs(state.p.x_tran) > self.track_obj.half_width:
-                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
-                return True
-
         # Check for maximum time steps (assuming max_steps is defined in __init__)
         # if hasattr(self, 'max_steps') and self.eps_len >= self.max_steps:
         #     return True
         # if any(lap_no >= self.max_n_laps for lap_no in self.lap_no):
-            # logger.debug(f"Max laps reached: {self.lap_no}")
-            # return True
+        # logger.debug(f"Max laps reached: {self.lap_no}")
+        # return True
         if self.eps_len > self.max_steps:
             return True
 
@@ -395,11 +413,6 @@ class MultiBarcEnv(gym.Env):
             if state.v.v_long < self.low_speed_threshold or np.abs(state.p.e_psi) > self.wrong_direction_threshold:
                 # logger.debug(f"Slow vehicle: {state.v.v_long} or wrong direction: {state.p.e_psi} by vehicle {i}")
                 return True
-
-        # Check for collision with opponent
-        if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y])) < self.collision_threshold:
-            # logger.debug(f"Collision: {np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array([self.sim_state[1].x.x, self.sim_state[1].x.y]))}")
-            return True
 
         # Stop if the ego is very far behind the opponent
         if self.rel_dist > self.track_obj.track_length * 0.8:
@@ -410,6 +423,8 @@ class MultiBarcEnv(gym.Env):
 
     def _get_info(self) -> Dict[str, Union[List[VehicleState], int, float]]:
         return {
+            'ego': {},
+            'oppo': {},
             'vehicle_state': copy.deepcopy(self.sim_state),  # Ground truth vehicle state.
             # 'lap_no': self.lap_no,  # Lap number
             'terminated': self._is_new_lap(),
