@@ -21,6 +21,7 @@ import os
 # from ray.tune.logger import UnifiedLogger
 import torch
 from ray.rllib.algorithms.algorithm import Algorithm
+from ray.rllib.algorithms.callbacks import DefaultCallbacks
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -35,6 +36,12 @@ else:
 
 NUM_TRAINING_STEPS = 3000
 CHECKPOINT_INTERVAL = 200
+
+class PerAgentRewardCallback(DefaultCallbacks):
+    def on_episode_end(self, *, worker, base_env, policies, episode, **kwargs):
+        for agent_id, reward in episode.agent_rewards.items():
+            # agent_rewards is a dict of ((agent_id, policy_id), reward)
+            episode.custom_metrics[f"{agent_id}_reward"] = reward
 
 def env_creator(config):
     print("Creating Environment")
@@ -125,7 +132,7 @@ config = (
         num_learners=1,
         num_gpus_per_learner=1,
     )
-
+    .callbacks(PerAgentRewardCallback)
     .framework("torch")  # or "tf2" if you prefer TensorFlow
 )
 
