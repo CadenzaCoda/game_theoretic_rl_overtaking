@@ -189,7 +189,7 @@ class MultiBarcEnv(gym.Env):
                                                                 -self.track_obj.half_width / 2,
                                                                 self.track_obj.half_width / 2),
                                                             e_psi=np.random.uniform(-np.pi / 6, np.pi / 6), ),
-                                           v=BodyLinearVelocity(v_long=np.random.uniform(0.5, 2), v_tran=0),
+                                           v=BodyLinearVelocity(v_long=1.5 - i, v_tran=0),
                                            w=BodyAngularVelocity(w_psi=0)) for i in range(2)]
         for _state in self.sim_state:
             self.track_obj.local_to_global_typed(_state)
@@ -235,20 +235,21 @@ class MultiBarcEnv(gym.Env):
         self.render()
 
         terminated = False
-        try:
-            self.dynamics_simulator[0].step(self.sim_state[0], T=self.dt)
-            self.track_obj.global_to_local_typed(self.sim_state[0])
-        except ValueError as e:
-            terminated = True
-
-        truncated = False
-        try:
-            # Step each vehicle's dynamics
-            for i, _state in enumerate(self.sim_state[1:]):
+        for i, _state in enumerate(self.sim_state):
+            try:
                 self.dynamics_simulator[i].step(_state, T=self.dt)
                 self.track_obj.global_to_local_typed(_state)
-        except ValueError as e:
-            truncated = True  # The control action may drive the vehicle out of the track during the internal steps.
+            except ValueError as e:
+                terminated = True
+
+        # truncated = False
+        # try:
+        #     # Step each vehicle's dynamics
+        #     for i, _state in enumerate(self.sim_state[1:]):
+        #         self.dynamics_simulator[i].step(_state, T=self.dt)
+        #         self.track_obj.global_to_local_typed(_state)
+        # except ValueError as e:
+        #     truncated = True  # The control action may drive the vehicle out of the track during the internal steps.
 
         # Update relative distance and lap counters
         self._update_relative_distance()
@@ -259,7 +260,7 @@ class MultiBarcEnv(gym.Env):
         obs = self._get_obs()
         rew = self._get_reward()
         terminated = terminated or self._get_terminal()
-        truncated = truncated or self._get_truncated()
+        truncated = self._get_truncated()
         info = self._get_info()
 
         if self._is_successful():
@@ -283,6 +284,9 @@ class MultiBarcEnv(gym.Env):
         return ob
 
     def _get_reward(self) -> float:
+        if self._is_draw():
+            return 0.
+        
         # Check for failed conditions
         if self._is_failure():
             return -100.0
@@ -355,6 +359,12 @@ class MultiBarcEnv(gym.Env):
         if self.sim_state[0].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[0].p.e_psi) > np.pi / 2:
             return True
 
+        # if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array(
+        #         [self.sim_state[1].x.x, self.sim_state[1].x.y])) < self.collision_threshold:
+        #     return True
+        # return False
+    
+    def _is_draw(self) -> bool:
         # Check for collision with opponent
         if np.linalg.norm(np.array([self.sim_state[0].x.x, self.sim_state[0].x.y]) - np.array(
                 [self.sim_state[1].x.x, self.sim_state[1].x.y])) < self.collision_threshold:
@@ -365,7 +375,7 @@ class MultiBarcEnv(gym.Env):
         """
         Episode is terminated if it's in a successful state or failed state.
         """
-        return self._is_successful() or self._is_failure()
+        return self._is_successful() or self._is_failure() or self._is_draw()
 
     def _get_truncated(self) -> bool:
         """

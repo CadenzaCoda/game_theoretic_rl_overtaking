@@ -186,13 +186,13 @@ class PIDRacelineFollowerWrapper:
         self.dyn_model = CasadiDynamicCLBicycle(t0, dynamics_config, track=track_obj)
         self.state_input_ub = VehicleState(
             p=ParametricPose(s=2 * self.track_obj.track_length, x_tran=self.track_obj.half_width - VW / 2, e_psi=100),
-            v=BodyLinearVelocity(v_long=10, v_tran=10),
+            v=BodyLinearVelocity(v_long=2.5, v_tran=10),  # NEW: Reduced speed limit. 
             w=BodyAngularVelocity(w_psi=10),
             u=VehicleActuation(u_a=2.0, u_steer=0.45))
         self.state_input_lb = VehicleState(
             p=ParametricPose(s=-2 * self.track_obj.track_length, x_tran=-(self.track_obj.half_width - VW / 2),
                              e_psi=-100),
-            v=BodyLinearVelocity(v_long=-10, v_tran=-10),
+            v=BodyLinearVelocity(v_long=-2.5, v_tran=-10),
             w=BodyAngularVelocity(w_psi=-10),
             u=VehicleActuation(u_a=-2.0, u_steer=-0.45))
         self.input_rate_ub = VehicleState(u=VehicleActuation(u_a=20.0, u_steer=4.5))
@@ -232,7 +232,7 @@ class PIDRacelineFollowerWrapper:
                                      noise_min=-0.9)
         self.pid_controller = PIDRacelineFollower(self.dt, pid_steer_params, pid_speed_params,
                                                   raceline=self.raceline,
-                                                  speed_scaling=0.7)
+                                                  speed_scaling=0.5)
 
     def _step_pid(self, _state: VehicleState, reference_modifier=None):
         self.pid_controller.step(_state, reference_modifier=reference_modifier)

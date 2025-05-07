@@ -165,20 +165,21 @@ class GameTheoreticEnv(MultiBarcEnv):
         self.render()
 
         terminated = False
-        try:
-            self.dynamics_simulator[0].step(self.sim_state[0], T=self.dt)
-            self.track_obj.global_to_local_typed(self.sim_state[0])
-        except ValueError as e:
-            terminated = True
-
-        truncated = False
-        try:
-            # Step each vehicle's dynamics
-            for i, _state in enumerate(self.sim_state[1:]):
+        for i, _state in enumerate(self.sim_state):
+            try:
                 self.dynamics_simulator[i].step(_state, T=self.dt)
                 self.track_obj.global_to_local_typed(_state)
-        except ValueError as e:
-            truncated = True  # The control action may drive the vehicle out of the track during the internal steps.
+            except ValueError as e:
+                terminated = True
+
+        # truncated = False
+        # try:
+        #     # Step each vehicle's dynamics
+        #     for i, _state in enumerate(self.sim_state[1:]):
+        #         self.dynamics_simulator[i].step(_state, T=self.dt)
+        #         self.track_obj.global_to_local_typed(_state)
+        # except ValueError as e:
+        #     truncated = True  # The control action may drive the vehicle out of the track during the internal steps.
 
         # Update relative distance and lap counters
         self._update_relative_distance()
@@ -189,7 +190,7 @@ class GameTheoreticEnv(MultiBarcEnv):
         obs = self._get_obs()
         rew = self._get_reward()
         terminated = terminated or self._get_terminal()
-        truncated = truncated or self._get_truncated()
+        truncated = self._get_truncated()
         info = self._get_info()
 
         if self._is_successful():
@@ -202,8 +203,3 @@ class GameTheoreticEnv(MultiBarcEnv):
         ego_r2, opp_r = rew
         info['opp_reward'] = opp_r
         return obs, (ego_r2, opp_r), terminated, truncated, info
-    #
-    # def _get_obs(self) -> np.ndarray:
-    #     obs = super()._get_obs()
-    #     # logger.debug(obs)
-    #     return obs
