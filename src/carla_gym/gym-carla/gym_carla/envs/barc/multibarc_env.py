@@ -2,7 +2,6 @@ import copy
 import time
 from typing import Optional, List, Tuple, Dict, Union
 
-import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from gymnasium.core import ObsType, ActType
@@ -14,15 +13,18 @@ from mpclab_common.pytypes import VehicleState, ParametricPose, OrientationEuler
     BodyAngularVelocity
 from mpclab_common.track import get_track
 from mpclab_simulation.dynamics_simulator import DynamicsSimulator
+from ray.rllib.env.multi_agent_env import MultiAgentEnv
 
 
-class MultiBarcEnv(gym.Env):
+class MultiBarcEnv(MultiAgentEnv):
     metadata = {'render.modes': ['human']}
-    AGENTS = ['ego', 'oppo']
 
     def __init__(self, track_name, t0=0., dt=0.1, dt_sim=0.01, max_n_laps=5, max_steps=300,
                  do_render=False, enable_camera=False, host='localhost', port=2000,
                  discrete_action: bool = False):
+        super().__init__()
+        self.possible_agents = ["ego", "oppo"]
+        self.agents = ["ego", "oppo"]
         self.track_obj = get_track(track_name)
         self.discrete = discrete_action
         # Fixed to 2 vehicles for racing
@@ -85,25 +87,27 @@ class MultiBarcEnv(gym.Env):
         self.lap_no = [0, 0]  # Track laps completed by each vehicle
 
         observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 9,), dtype=np.float32)
-        self.observation_space = spaces.Dict(
-            {'ego': observation_space, 'oppo': observation_space}
-        )
+
+        self.observation_space = spaces.Dict({
+            'ego': observation_space,
+            'oppo': observation_space,
+        })
+
         # Fixed action space for 2 vehicles
         self._action_bounds = np.tile(np.array([2, 0.45]), [2, 1])
         if self.discrete:
             self.u_a_space = np.linspace(-2, 2, 32, endpoint=True, dtype=np.float32)
             self.u_steer_space = np.linspace(-0.45, 0.45, 32, endpoint=True, dtype=np.float32)  # Note: The choices are fixed for now. (10x10)
-            self.action_space = spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
+            action_space = spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
         else:
             self.u_a_space = None
             self.u_steer_space = None
-            self.action_space = spaces.Box(low=-self._action_bounds,
-                                           high=self._action_bounds,
-                                           dtype=np.float32)
+            action_space = spaces.Box(low=-self._action_bounds, high=self._action_bounds, dtype=np.float32)
 
-        self.action_space = spaces.Dict(
-            {'ego': self.action_space, 'oppo': self.action_space}
-        )
+        self.action_space = spaces.Dict({
+            "ego": action_space,
+            "oppo": action_space,
+        })
 
         self.t = None
         self.max_lap_speed = self.min_lap_speed = self._sum_lap_speed = self.eps_len = 0
@@ -112,6 +116,22 @@ class MultiBarcEnv(gym.Env):
         self.low_speed_threshold = 0.25
         self.wrong_direction_threshold = np.pi / 2
         self.overtake_margin = -0.5
+
+    # def get_observation_space(self, agent_id):
+    #     if agent_id=="ego":
+    #         return self.observation_space["ego"]
+    #     elif agent_id=="oppo":
+    #         return self.observation_space["oppo"]
+    #     else:
+    #         raise ValueError(f"bad agent id: {agent_id}!")
+    #
+    # def get_action_space(self, agent_id):
+    #     if agent_id=="ego":
+    #         return spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
+    #     elif agent_id=="oppo":
+    #         return spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
+    #     else:
+    #         raise ValueError(f"bad agent id: {agent_id}!")
 
     def get_track(self):
         return self.track_obj
@@ -173,6 +193,7 @@ class MultiBarcEnv(gym.Env):
             seed: Optional[int] = None,
             options: Optional[dict] = None,
     ) -> Tuple[ObsType, dict]:
+
         if seed is not None:
             np.random.seed(seed)
         if (options is not None and options.get('render')) or self.do_render:
@@ -216,7 +237,7 @@ class MultiBarcEnv(gym.Env):
         self._reset_speed_stats()
         self.eps_len = 1
 
-        return self._get_obs(), self._get_info()
+        return self._get_obs(), {}
 
     def _update_speed_stats(self):
         v = np.linalg.norm([self.sim_state[0].v.v_long, self.sim_state[0].v.v_tran])
@@ -230,6 +251,7 @@ class MultiBarcEnv(gym.Env):
         self.max_lap_speed = self.min_lap_speed = self._sum_lap_speed = v
 
     def step(self, action: ActType) -> Tuple[ObsType, float, bool, bool, dict]:
+        print(f"action: {action}")
         action = np.array([action['ego'], action['oppo']])
         if self.discrete:
             action = self.decode_action(action)
@@ -274,7 +296,7 @@ class MultiBarcEnv(gym.Env):
             # self._reset_speed_stats()
             # self.eps_len = 1
 
-        return obs, rew, {"ego": terminated, "oppo": terminated}, {"ego": truncated, "oppo": truncated}, self._get_info()
+        return obs, rew, {"ego": terminated, "oppo": terminated, "__all__": terminated}, {"ego": truncated, "oppo": truncated, "__all__": truncated}, {}
 
     def render(self):
         # if not self.do_render:
@@ -297,10 +319,10 @@ class MultiBarcEnv(gym.Env):
         # Check for collisions with track boundary
         # if np.abs(self.sim_state[0].p.x_tran) > self.track_obj.half_width:
         if self._is_failure():
-            return {"ego": -100.0, "oppo": 100}
+            return {"ego": -100.0, "oppo": 100.0}
         # elif np.abs(self.sim_state[1].p.x_tran) > self.track_obj.half_width:
         if self._is_success():
-            return {"ego": 100, "oppo": -100.0}
+            return {"ego": 100.0, "oppo": -100.0}
         if self._is_draw():
             return {"ego": 0.0, "oppo": 0.0}
 
@@ -330,7 +352,6 @@ class MultiBarcEnv(gym.Env):
         k_boundary = 0.2  # 20 / (1 - 0.9) / 20
         k_speed = 0.2  # 20 / (1 - 0.5) / 20
         safe_distance_min = 0.5
-        reward_progress_decay = 0.95
 
         reward_progress_ego = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s)
         reward_progress_oppo = k_progress * max(0, self.sim_state[1].p.s - self.last_state[1].p.s)
@@ -347,15 +368,15 @@ class MultiBarcEnv(gym.Env):
                                                   np.abs(self.sim_state[1].p.x_tran) / self.track_obj.half_width - 0.9)
 
         # Penalty for being too slow
-        speed_penalty_ego = -k_speed * max(0, 0.5 - self.sim_state[0].v.v_long)
-        speed_penalty_oppo = -k_speed * max(0, 0.5 - self.sim_state[1].v.v_long)
+        speed_penalty_ego = -k_speed * max(0.0, 0.5 - self.sim_state[0].v.v_long)
+        speed_penalty_oppo = -k_speed * max(0.0, 0.5 - self.sim_state[1].v.v_long)
 
         catching_up_reward = k_catching_up * (self.last_rel_dist - self.rel_dist)  # Reward for catching up
         if physical_distance < safe_distance_min:
             proximity_penalty = -k_relative * (
                         safe_distance_min - physical_distance)  # Penalty for being too close to the opponent
         else:
-            proximity_penalty = 0
+            proximity_penalty = 0.0
         return {
             "ego": reward_progress_ego + catching_up_reward + proximity_penalty + boundary_penalty_ego + speed_penalty_ego - 0.1,
             "oppo": reward_progress_oppo - catching_up_reward + proximity_penalty + boundary_penalty_oppo + speed_penalty_oppo - 0.1}

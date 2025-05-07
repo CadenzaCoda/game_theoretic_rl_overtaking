@@ -38,12 +38,11 @@ def env_creator(config):
 
 register_env(name="my_barc", env_creator=env_creator)
 
-# Define a function to instantiate the environment
 CKPT_DIR = "/home/wilson/ray_results/PPO_my_barc_2025-05-05_15-59-40k8qe_whs/checkpoint_step_1000"
 algo = Algorithm.from_checkpoint(CKPT_DIR)
 
 
-results = algo.evaluate()                       # ← now uses the config above
+results = algo.evaluate()
 print("Reward:", results["evaluation"]["episode_reward_mean"])
 algo.stop()
 ray.shutdown()
