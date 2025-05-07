@@ -111,7 +111,8 @@ class MultiBarcEnv(MultiAgentEnv):
         })
 
         self.t = None
-        self.max_eps_speed = self.min_eps_speed = self._sum_eps_speed = self.eps_len = 0
+        self.max_eps_speed, self.min_eps_speed, self._sum_eps_speed = [[0, 0] for _ in range(3)]
+        self.eps_len = 0
 
         self.collision_threshold = 0.3
         self.low_speed_threshold = 0.25
@@ -224,15 +225,16 @@ class MultiBarcEnv(MultiAgentEnv):
         return self._get_obs(), self._get_info()
 
     def _update_speed_stats(self):
-        v = np.linalg.norm([self.sim_state[0].v.v_long, self.sim_state[0].v.v_tran])
-        self.max_eps_speed = max(self.max_eps_speed, v)
-        self.min_eps_speed = min(self.min_eps_speed, v)
-        self._sum_eps_speed += v
+        for i, _state in enumerate(self.sim_state):
+            v = np.linalg.norm([_state.v.v_long, _state.v.v_tran])
+            self.max_eps_speed[i] = max(self.max_eps_speed[i], v)
+            self.min_eps_speed[i] = min(self.min_eps_speed[i], v)
+            self._sum_eps_speed[i] += v
         self.eps_len += 1
 
     def _reset_speed_stats(self):
-        v = np.linalg.norm([self.sim_state[0].v.v_long, self.sim_state[0].v.v_tran])
-        self.max_eps_speed = self.min_eps_speed = self._sum_eps_speed = v
+        v = [np.linalg.norm([_state.v.v_long, _state.v.v_tran]) for _state in self.sim_state]
+        self.max_eps_speed, self.min_eps_speed, self._sum_eps_speed = [v for _ in range(3)]
 
     def step(self, action: ActType) -> Tuple[ObsType, float, bool, bool, dict]:
         action = np.array([action['ego'], action['oppo']])
@@ -273,20 +275,20 @@ class MultiBarcEnv(MultiAgentEnv):
 
         if _failure[1] or self._is_success():
             logger.debug(
-                f"Ego won in {info['lap_time']:.1f} s. "
-                f"Ego avg_v = {info['avg_eps_speed']:.4f}, max_v = {info['max_eps_speed']:.4f}, "
-                f"min_v = {info['min_eps_speed']:.4f}")
+                f"Ego won in {info['ego']['lap_time']:.1f} s. "
+                f"Ego avg_v = {info['ego']['avg_eps_speed']:.4f}, max_v = {info['ego']['max_eps_speed']:.4f}, "
+                f"min_v = {info['ego']['min_eps_speed']:.4f}")
         elif _failure[0] or self._is_failure():
             logger.debug(
-                f"Opponent won in {info['lap_time']:.1f} s."
-                f"Ego avg_v = {info['avg_eps_speed']:.4f}, max_v = {info['max_eps_speed']:.4f}, "
-                f"min_v = {info['min_eps_speed']:.4f}"
+                f"Opponent won in {info['ego']['lap_time']:.1f} s."
+                f"Ego avg_v = {info['ego']['avg_eps_speed']:.4f}, max_v = {info['ego']['max_eps_speed']:.4f}, "
+                f"min_v = {info['ego']['min_eps_speed']:.4f}"
             )
         elif terminated:
             logger.debug(
-                f"Draw in {info['lap_time']:.1f} s. "
-                f"Ego avg_v = {info['avg_eps_speed']:.4f}, max_v = {info['max_eps_speed']:.4f}, "
-                f"min_v = {info['min_eps_speed']:.4f}"
+                f"Draw in {info['ego']['lap_time']:.1f} s. "
+                f"Ego avg_v = {info['ego']['avg_eps_speed']:.4f}, max_v = {info['ego']['max_eps_speed']:.4f}, "
+                f"min_v = {info['ego']['min_eps_speed']:.4f}"
             )
 
         return obs, rew, {"ego": terminated, "oppo": terminated, "__all__": terminated}, {"ego": truncated, "oppo": truncated, "__all__": truncated}, self._get_info()
@@ -417,20 +419,34 @@ class MultiBarcEnv(MultiAgentEnv):
         return False
 
     def _get_info(self) -> Dict[str, Union[List[VehicleState], int, float]]:
+        is_new_lap, success, failure, draw = self._is_new_lap(), self._is_success(), self._is_failure(), self._is_draw()
         return {
-            'ego': {},
-            'oppo': {},
-            'vehicle_state': copy.deepcopy(self.sim_state),  # Ground truth vehicle state.
-            'terminated': self._is_new_lap(),
-            'success': self._is_success(),
-            'failure': self._is_failure(),
-            'draw': self._is_draw(), 
-            'avg_eps_speed': self._sum_eps_speed / self.eps_len,  # Mean velocity of the current lap.
-            'max_eps_speed': self.max_eps_speed,  # Max velocity of the current lap.
-            'min_eps_speed': self.min_eps_speed,  # Min velocity of the current lap.
-            'lap_time': self.eps_len * self.dt,  # Time elapsed so far in the current lap.
-            'relative_distance': self.rel_dist,  # Relative distance between vehicles
-            'lap_no': self.lap_no,  # Laps completed by each vehicle
+            'ego': {
+                'vehicle_state': self.sim_state[0],
+                'terminated': is_new_lap[0],
+                'success': success,
+                'failure': failure,
+                'draw': draw,
+                'avg_eps_speed': self._sum_eps_speed[0] / self.eps_len,
+                'max_eps_speed': self.max_eps_speed[0],
+                'min_eps_speed': self.min_eps_speed[0],
+                'lap_time': self.eps_len * self.dt,
+                'relative_distance': self.rel_dist,
+                'lap_no': self.lap_no[0],
+            },
+            'oppo': {
+                'vehicle_state': self.sim_state[1],
+                'terminated': is_new_lap[1],
+                'success': failure,
+                'failure': success,
+                'draw': draw,
+                'avg_eps_speed': self._sum_eps_speed[1] / self.eps_len,
+                'max_eps_speed': self.max_eps_speed[1],
+                'min_eps_speed': self.min_eps_speed[1],
+                'lap_time': self.eps_len * self.dt,
+                'relative_distance': -self.rel_dist,
+                'lap_no': self.lap_no[1],
+            },
         }
 
     def _update_relative_distance(self):
