@@ -250,6 +250,21 @@ class MultiBarcEnv(MultiAgentEnv):
         v = np.linalg.norm([self.sim_state[0].v.v_long, self.sim_state[0].v.v_tran])
         self.max_lap_speed = self.min_lap_speed = self._sum_lap_speed = v
 
+    def _is_success(self) -> bool:
+        """
+        Check if the episode is successful (e.g., overtaking)
+        """
+        if np.abs(self.sim_state[1].p.x_tran) > self.track_obj.half_width:
+            # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
+            return True
+
+        if self.sim_state[1].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[1].p.e_psi) > np.pi / 2:
+            return True
+
+        was_behind = self.last_rel_dist >= self.overtake_margin
+        is_ahead = self.rel_dist < self.overtake_margin
+        return was_behind and is_ahead
+
     def step(self, action: ActType) -> Tuple[ObsType, float, bool, bool, dict]:
         print(f"action: {action}")
         action = np.array([action['ego'], action['oppo']])
@@ -286,7 +301,7 @@ class MultiBarcEnv(MultiAgentEnv):
         truncated = self._get_truncated()
         info = self._get_info()
 
-        if terminated:
+        if self._is_success():
             logger.info(
                 f"Overtaking successful in {info['lap_time']:.1f} s. "
                 f"avg_v = {info['avg_lap_speed']:.4f}, max_v = {info['max_lap_speed']:.4f}, "
@@ -381,20 +396,15 @@ class MultiBarcEnv(MultiAgentEnv):
             "ego": reward_progress_ego + catching_up_reward + proximity_penalty + boundary_penalty_ego + speed_penalty_ego - 0.1,
             "oppo": reward_progress_oppo - catching_up_reward + proximity_penalty + boundary_penalty_oppo + speed_penalty_oppo - 0.1}
 
-    def _is_success(self) -> bool:
-        """
-        Check if the episode is successful (e.g., overtaking)
-        """
-        if np.abs(self.sim_state[1].p.x_tran) > self.track_obj.half_width:
-            # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
-            return True
-        was_behind = self.last_rel_dist >= self.overtake_margin
-        is_ahead = self.rel_dist < self.overtake_margin
-        return was_behind and is_ahead
 
     def _is_failure(self) -> bool:
         if np.abs(self.sim_state[0].p.x_tran) > self.track_obj.half_width:
             # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
+            return True
+        if self.sim_state[0].v.v_long < self.low_speed_threshold or np.abs(self.sim_state[0].p.e_psi) > np.pi / 2:
+            return True
+        if self.rel_dist > self.track_obj.track_length * 0.8:
+            # logger.debug(f"Ego is very far behind the opponent: {self.rel_dist}")
             return True
 
     def _is_draw(self) -> bool:
@@ -429,16 +439,14 @@ class MultiBarcEnv(MultiAgentEnv):
         if self.eps_len > self.max_steps:
             return True
 
-        # Check for slow vehicles or wrong direction
-        for i, state in enumerate(self.sim_state):
-            if state.v.v_long < self.low_speed_threshold or np.abs(state.p.e_psi) > self.wrong_direction_threshold:
-                # logger.debug(f"Slow vehicle: {state.v.v_long} or wrong direction: {state.p.e_psi} by vehicle {i}")
-                return True
+        # # Check for slow vehicles or wrong direction
+        # for i, state in enumerate(self.sim_state):
+        #     if state.v.v_long < self.low_speed_threshold or np.abs(state.p.e_psi) > self.wrong_direction_threshold:
+        #         # logger.debug(f"Slow vehicle: {state.v.v_long} or wrong direction: {state.p.e_psi} by vehicle {i}")
+        #         return True
 
         # Stop if the ego is very far behind the opponent
-        if self.rel_dist > self.track_obj.track_length * 0.8:
-            # logger.debug(f"Ego is very far behind the opponent: {self.rel_dist}")
-            return True
+
 
         return False
 
