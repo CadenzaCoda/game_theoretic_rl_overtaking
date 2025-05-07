@@ -7,7 +7,8 @@ from numpy import floating
 from tqdm import trange
 
 import random
-from gym_carla.controllers.barc_pid import PIDWrapper
+# from gym_carla.controllers.barc_pid import PIDWrapper
+from gym_carla.controllers.barc_mpcc_conv import MPCCConvWrapper
 from loguru import logger
 import os
 from typing import Dict, Tuple, Optional, Union, Any
@@ -120,6 +121,7 @@ class PPOTrainer:
     def __init__(
         self,
         env: gym.Env,
+        env_name: str = 'barc-v1-race',
         hidden_dim: int = 256,
         learning_rate: float = 3e-4,
         gamma: float = 0.99,
@@ -310,7 +312,7 @@ class PPOTrainer:
         old_log_probs: np.ndarray,
         advantages: np.ndarray,
         returns: np.ndarray,
-    ) -> dict[str, floating[Any]]:
+    ):
         """Perform one step of PPO training."""
         # Convert to tensors and move to device
         states = torch.FloatTensor(states).to(self.device)
@@ -555,6 +557,10 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--evaluation', action='store_true')
+    parser.add_argument('--n_epochs', type=int, default=1000)
+    parser.add_argument('--max_steps', type=int, default=2048)
+    parser.add_argument('--resume', type=int, default=-1)
     parser.add_argument('-m', '--comment', type=str, default='experimental')
     params = parser.parse_args()
 
@@ -562,19 +568,32 @@ if __name__ == "__main__":
 
     env_name = "barc-v1-race"
     track_name = "L_track_barc"
-    opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
+    model_name = "ppo-mpcc"
+    # opponent = PIDWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
+    opponent = MPCCConvWrapper(dt=0.1, t0=0., track_obj=get_track(track_name))
     env = gym.make(env_name, opponent=opponent, track_name=track_name, do_render=False, enable_camera=False,
                    discrete_action=True)  # Initializing the env outside the trainer makes more sense.
 
     trainer = PPOTrainer(
         env=env,
-        model_name="ppo",
+        env_name=env_name,
+        model_name=model_name,
         comment=params.comment
     )
     
+    if params.evaluation:
+        # raise UserWarning("Change the weight files first!")
+        trainer.load_model('ppo_model_1000_barc-v1-race_ppo-mpcc.pt')
+        # trainer.load_model(f'ppo_{params.comment}_latest.pth')
+        for _ in range(25):
+            trainer.evaluate_agent()
+        exit(0)
     # Train the agent
     try:
-        trainer.train(num_iterations=1000, max_steps=2048) 
+        if params.resume > 0:
+            trainer.load_model(f"ppo_model_{params.resume}_{env_name}_{model_name}.pt")
+            trainer.episode_count = params.resume
+        trainer.train(num_iterations=params.n_epochs, max_steps=params.max_steps) 
     finally:
-        trainer.save_model('ppo_latest.pth')
+        trainer.save_model(f'ppo_{params.comment}_latest.pth')
         trainer.close()  # Close TensorBoard writer

@@ -1,6 +1,7 @@
 import time
 
 import ray
+from pathlib import Path
 # Initialize Ray
 import os
 import gymnasium as gym
@@ -128,7 +129,7 @@ config = (
 # Build the algorithm
 algo = config.build()
 
-checkpoint_path = "/home/wilson/ray_results/PPO_barc_multi_2025-05-06_18-48-14dduhbo8j/checkpoint_step_3000"
+checkpoint_path = str((Path.home() / "ray_results/PPO_barc_multi_2025-05-06_22-34-34i16ynltr/checkpoint_step_200").resolve())
 algo.restore(checkpoint_path)
 
 for i in range(50):

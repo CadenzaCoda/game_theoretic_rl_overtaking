@@ -41,7 +41,7 @@ class MPCCConvWrapper:
                                            u=VehicleActuation(u_a=2.0, u_steer=0.45))
         self.state_input_lb = VehicleState(x=Position(x=-1e9, y=-1e9),
                                            e=OrientationEuler(psi=-10),
-                                           v=BodyLinearVelocity(v_long=-4, v_tran=-2),
+                                           v=BodyLinearVelocity(v_long=-4.0, v_tran=-2),
                                            w=BodyAngularVelocity(w_psi=-7),
                                            u=VehicleActuation(u_a=-2.0, u_steer=-0.45))
         self.input_rate_max = VehicleState(u=VehicleActuation(u_a=40.0, u_steer=4.5))

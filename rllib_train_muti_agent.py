@@ -1,5 +1,9 @@
 import ray
 # Initialize Ray
+ray.init(
+    include_dashboard=True,
+    dashboard_host="0.0.0.0"
+)
 import os
 import gymnasium as gym
 from gymnasium import spaces

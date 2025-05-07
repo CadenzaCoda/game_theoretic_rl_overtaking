@@ -1,4 +1,5 @@
 #!/usr/bin python3
+import copy
 
 import numpy as np
 import scipy.linalg as la
@@ -189,6 +190,16 @@ class CasadiDynamicsModel(AbstractModel):
             else:
                 self.track.global_to_local_typed(vehicle_state)
         return vehicle_state
+
+    def predict(self, vehicle_state: VehicleState, actions: np.ndarray) -> np.ndarray:
+        q = self.state2q(vehicle_state)
+        _state = VehicleState(t=vehicle_state.t)
+        ret = []
+        for u in actions:
+            self.qu2state(_state, q, u)
+            self.step(_state, inplace=True)
+            ret.append(self.state2q(_state))
+        return np.array(ret)
 
     def rk4(self, x, u, f, M, h):
         '''
