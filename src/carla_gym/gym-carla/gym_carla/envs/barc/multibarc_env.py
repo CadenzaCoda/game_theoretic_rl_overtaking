@@ -221,7 +221,7 @@ class MultiBarcEnv(MultiAgentEnv):
         self._reset_speed_stats()
         self.eps_len = 1
 
-        return self._get_obs(), {}
+        return self._get_obs(), self._get_info()
 
     def _update_speed_stats(self):
         v = np.linalg.norm([self.sim_state[0].v.v_long, self.sim_state[0].v.v_tran])
@@ -289,7 +289,7 @@ class MultiBarcEnv(MultiAgentEnv):
                 f"min_v = {info['min_eps_speed']:.4f}"
             )
 
-        return obs, rew, {"ego": terminated, "oppo": terminated, "__all__": terminated}, {"ego": truncated, "oppo": truncated, "__all__": truncated}, {}
+        return obs, rew, {"ego": terminated, "oppo": terminated, "__all__": terminated}, {"ego": truncated, "oppo": truncated, "__all__": truncated}, self._get_info()
 
     def render(self):
         # if not self.do_render:

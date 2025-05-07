@@ -24,105 +24,54 @@ def main(seed=0):
     t0 = 0
     rng = np.random.default_rng()
     track_name = 'L_track_barc'
-    
+
     # Create the two-car racing environment
-    controller_type = [PIDRacelineFollowerWrapper, MPCCConvWrapper][::-1]
+    controller_type = [PIDRacelineFollowerWrapper, PIDRacelineFollowerWrapper]
     ego_controller = controller_type[0](dt=dt, t0=t0, track_obj=get_track(track_name))
     opponent_controller = controller_type[1](dt=dt, t0=t0, track_obj=get_track(track_name))
 
-    env = gym.make('barc-v2',
+    env = gym.make('barc-v1',
                    # opponent=opponent_controller,
                    track_name=track_name,
                    t0=t0, dt=dt, dt_sim=dt_sim,
                    do_render=True,
-                   enable_camera=False)
-    
-    # Create controllers for both vehicles
-    # ego_controller = LMPCWrapper(dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
-    # controller_type = rng.choice([PIDWrapper, MPCCConvWrapper, LMPCWrapper], size=2, replace=False)
+                   enable_camera=False,
+                   discrete_action=False)
 
     # Bind the controllers to the environment
     env.unwrapped.bind_controller(ego_controller)
-    
+
     # Reset the environment
     ob, info = env.reset(seed=seed, options={'spawning': 'fixed'})
-    
+
     # Reset the controllers
     ego_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][0]})
     opponent_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][1]})
-    
+
     # Initialize variables
     rew, terminated, truncated = None, False, False
     episode_count = 0
     success_count = 0
-    
+
     # Main simulation loop
     while True:
         # Get actions from both controllers
-        ego_action, _ = ego_controller.step(index=0, **info)
-        ego_dist = Normal(loc=torch.from_numpy(ego_action), scale=torch.ones(2) * 0.1)
-        
-        # For the opponent, we need to create a modified observation and info
-        # that only contains the opponent's state
-        # opponent_ob = {
-        #     'gps': np.array([info['vehicle_state'][1].x.x,
-        #                      info['vehicle_state'][1].x.y,
-        #                      info['vehicle_state'][1].e.psi], dtype=np.float32),
-        #     'velocity': np.array([info['vehicle_state'][1].v.v_long,
-        #                          info['vehicle_state'][1].v.v_tran,
-        #                          info['vehicle_state'][1].w.w_psi], dtype=np.float32),
-        #     'state': np.array([info['vehicle_state'][1].v.v_long,
-        #                       info['vehicle_state'][1].v.v_tran,
-        #                       info['vehicle_state'][1].w.w_psi,
-        #                       info['vehicle_state'][1].p.s,
-        #                       info['vehicle_state'][1].p.x_tran,
-        #                       info['vehicle_state'][1].p.e_psi,
-        #                       info['vehicle_state'][1].x.x,
-        #                       info['vehicle_state'][1].x.y,
-        #                       info['vehicle_state'][1].e.psi], dtype=np.float32),
-        # }
-        #
-        # opponent_info = {
-        #     'vehicle_state': info['vehicle_state'][1],
-        #     'lap_no': info['lap_no'][1],
-        #     'terminated': info['terminated'][1],
-        #     'avg_lap_speed': info['avg_eps_speed'],
-        #     'max_lap_speed': info['max_eps_speed'],
-        #     'min_lap_speed': info['min_eps_speed'],
-        #     'lap_time': info['lap_time'],
-        # }
-        #
-        # opponent_action, _ = opponent_controller.step(**opponent_ob, **opponent_info)
-        #
-        # # Combine actions for both vehicles
-        # combined_action = np.vstack([ego_action, opponent_action])
-        
+        # Note: Your step function can take anything that the environment outputs, including the entire info dictionary and the observation vector.
+        # See the details in multibarc_env.py.
+        ego_action, _ = ego_controller.step(vehicle_state=info['vehicle_state'][0], terminated=info['terminated'][0],
+                                            lap_no=info['lap_no'][0])
+        oppo_action, _ = opponent_controller.step(vehicle_state=info['vehicle_state'][1], terminated=info['terminated'][1],
+                                             lap_no=info['lap_no'][1])
         # Step the environment
-        ob, rew, terminated, truncated, info = env.step((ego_action, ego_dist))
-        
-        # Log episode results
-        if info['success']:
-            success_count += 1
-            logger.info(f"Successful overtaking! Episode {episode_count}")
-            logger.info(f"Success rate: {success_count}/{episode_count+1}")
-            
-        elif terminated or truncated:
-            episode_count += 1
-            logger.info(f"Episode {episode_count} truncated.")
-            logger.info(f"Success rate: {success_count}/{episode_count}")
-            
-            # Reset the environment and controllers
-            # ob, info = env.reset(seed=seed, options={'spawning': 'fixed'})
-            ob, info = env.reset()
-            # controller_type = [MPCCConvWrapper, LMPCWrapper]
-            # controller_type = rng.choice([PIDWrapper, MPCCConvWrapper, LMPCWrapper], size=2, replace=False)
-            # ego_controller = controller_type[0](dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
-            # env.unwrapped.bind_controller(ego_controller)
-            # opponent_controller = controller_type[1](dt=dt, t0=t0, track_obj=env.unwrapped.get_track())
+        ob, rew, terminated, truncated, info = env.step({'ego': ego_action, 'oppo': oppo_action})
 
+        # Log episode results
+        if terminated['__all__'] or truncated['__all__']:
+            episode_count += 1
+            ob, info = env.reset()
             ego_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][0]})
             opponent_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][1]})
-            
+
             # Add a small delay between episodes
             time.sleep(1)
 
@@ -134,4 +83,4 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0)
     params = vars(parser.parse_args())
 
-    main(**params) 
+    main(**params)

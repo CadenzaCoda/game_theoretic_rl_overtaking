@@ -129,7 +129,7 @@ class PIDRacelineFollower(AbstractController):
         reference = self.raceline.get_reference(vehicle_state.p.s, speed_scaling=self.speed_scaling)
         _v_ref, _x_tran_ref, psi_ref = reference['x0'], reference['x5'], reference['x3']
 
-        v_ext, x_tran_ext, strength = reference_modifier
+        v_ext, x_tran_ext, strength = reference_modifier if reference_modifier is not None else (0, 0, 0)
         strength *= np.exp(-np.abs(x_tran_ext - _x_tran_ref))
         v_ref = strength * v_ext + (1 - strength) * _v_ref
         x_tran_ref = strength * x_tran_ext + (1 - strength) * _x_tran_ref
