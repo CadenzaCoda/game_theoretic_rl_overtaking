@@ -17,7 +17,7 @@ from gym_carla.controllers.barc_pid import PIDWrapper
 
 
 class BarcEnvRace(gym.Env):
-    def __init__(self, track_name, opponent: Optional['PIDWrapper'] = None, t0=0., dt=0.1, dt_sim=0.01,
+    def __init__(self, track_name='L_track_barc', opponent: Optional['PIDWrapper'] = None, t0=0., dt=0.1, dt_sim=0.01,
                  max_steps = 300, do_render=False, discrete_action: bool = False,
                  enable_camera=False, host='localhost', port=2000):
         self.max_steps = None
@@ -171,7 +171,6 @@ class BarcEnvRace(gym.Env):
             self.visualizer.reset()
         elif self.visualizer is not None:
             self.visualizer.close()
-        self.opponent.reset()
         if options is not None and options.get('spawning') == 'fixed':
             logger.debug("Respawning at fixed location.")
 
@@ -189,12 +188,13 @@ class BarcEnvRace(gym.Env):
                                                             x_tran=np.random.uniform(
                                                                 -self.track_obj.half_width / 2,
                                                                 self.track_obj.half_width / 2),
-                                                            e_psi=np.random.uniform(-np.pi / 6, np.pi / 6), ),
-                                           v=BodyLinearVelocity(v_long=np.random.uniform(0.5, 2), v_tran=0),
+                                                            e_psi=np.random.uniform(-np.pi / 12, np.pi / 12), ),
+                                           v=BodyLinearVelocity(v_long=np.random.uniform(0.5, 0.6), v_tran=0),
                                            w=BodyAngularVelocity(w_psi=0)) for i in range(2)]
         for _state in self.sim_state:
             self.track_obj.local_to_global_typed(_state)
         self.last_state = copy.deepcopy(self.sim_state)
+        self.opponent.reset(options={'vehicle_state': self.sim_state[1]})
 
         self.t = self.t0
         self.lap_start = self.t
@@ -304,7 +304,7 @@ class BarcEnvRace(gym.Env):
         safe_distance_min = 0.5
         reward_progress_decay = 0.95
 
-        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s) * reward_progress_decay ** self.eps_len
+        reward_progress = k_progress * max(0, self.sim_state[0].p.s - self.last_state[0].p.s)  # * reward_progress_decay ** self.eps_len
 
         physical_distance = np.linalg.norm([
             self.sim_state[0].x.x - self.sim_state[1].x.x,
@@ -328,6 +328,12 @@ class BarcEnvRace(gym.Env):
         """
         Episode terminates when the agent successfully overtakes the opponent
         """
+        # Check for opponent out of track
+        for i, state in enumerate(self.sim_state[1:]):
+            if np.abs(state.p.x_tran) > self.track_obj.half_width:
+                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
+                return True
+            
         # Check if agent has overtaken the opponent using relative distance
         was_behind = self.last_rel_dist >= self.overtake_margin
         is_ahead = self.rel_dist < self.overtake_margin
@@ -370,12 +376,6 @@ class BarcEnvRace(gym.Env):
         3) Any vehicle other than ego is going too slow (< 0.25)
         4) Any vehicle other than ego is going in the wrong way (e.psi > pi/2)
         """
-        # Check for out of track
-        for i, state in enumerate(self.sim_state[1:]):
-            if np.abs(state.p.x_tran) > self.track_obj.half_width:
-                # logger.debug(f"Out of track: {np.abs(state.p.x_tran)} by vehicle {i}")
-                return True
-
         # Check for maximum time steps (assuming max_steps is defined in __init__)
         # if hasattr(self, 'max_steps') and self.eps_len >= self.max_steps:
         #     return True
