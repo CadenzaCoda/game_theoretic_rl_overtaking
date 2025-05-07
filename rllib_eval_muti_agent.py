@@ -129,7 +129,7 @@ config = (
 # Build the algorithm
 algo = config.build()
 
-checkpoint_path = str((Path.home() / "ray_results/PPO_barc_multi_2025-05-06_22-34-34i16ynltr/checkpoint_step_200").resolve())
+checkpoint_path = str((Path.home() / "ray_results/PPO_barc_multi_2025-05-06_23-15-372wldvqzi/checkpoint_step_3000").resolve())
 algo.restore(checkpoint_path)
 
 for i in range(50):
