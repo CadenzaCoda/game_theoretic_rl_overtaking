@@ -1,9 +1,5 @@
 import ray
 # Initialize Ray
-ray.init(
-    include_dashboard=True,
-    dashboard_host="0.0.0.0"
-)
 import os
 import gymnasium as gym
 from gymnasium import spaces
@@ -95,18 +91,6 @@ config = (
         policy_mapping_fn=map_fn,
         policies_to_train=["ego", "oppo"]
     )
-
-    # .evaluation(
-    #     # evaluation_interval=10,  # Optional: for running evaluation episodes every N iterations
-    #     evaluation_duration=10,                      # run exactly 1 episode
-    #     evaluation_duration_unit="episodes",
-    #     evaluation_config={
-    #         "render_env": True,                     # call env.render()
-    #         "create_env_on_driver": True,           # build eval env in driver
-    #         "env_config": {"do_render": True},    # (if your env looks at this flag)
-    #     }
-    # )
-
     .training(
         model={
             "fcnet_hiddens": [1024, 512, 256, 128],

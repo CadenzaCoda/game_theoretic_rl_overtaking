@@ -45,8 +45,8 @@ def main(seed=0):
     ob, info = env.reset(seed=seed, options={'spawning': 'fixed'})
 
     # Reset the controllers
-    ego_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][0]})
-    opponent_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][1]})
+    ego_controller.reset(seed=seed, options={'vehicle_state': info['ego']['vehicle_state']})
+    opponent_controller.reset(seed=seed, options={'vehicle_state': info['ego']['vehicle_state']})
 
     # Initialize variables
     rew, terminated, truncated = None, False, False
@@ -58,10 +58,10 @@ def main(seed=0):
         # Get actions from both controllers
         # Note: Your step function can take anything that the environment outputs, including the entire info dictionary and the observation vector.
         # See the details in multibarc_env.py.
-        ego_action, _ = ego_controller.step(vehicle_state=info['vehicle_state'][0], terminated=info['terminated'][0],
-                                            lap_no=info['lap_no'][0])
-        oppo_action, _ = opponent_controller.step(vehicle_state=info['vehicle_state'][1], terminated=info['terminated'][1],
-                                             lap_no=info['lap_no'][1])
+        ego_action, _ = ego_controller.step(vehicle_state=info['ego']['vehicle_state'], terminated=info['ego']['terminated'],
+                                            lap_no=info['ego']['lap_no'])
+        oppo_action, _ = opponent_controller.step(vehicle_state=info['oppo']['vehicle_state'], terminated=info['oppo']['terminated'],
+                                             lap_no=info['oppo']['lap_no'])
         # Step the environment
         ob, rew, terminated, truncated, info = env.step({'ego': ego_action, 'oppo': oppo_action})
 
@@ -69,8 +69,8 @@ def main(seed=0):
         if terminated['__all__'] or truncated['__all__']:
             episode_count += 1
             ob, info = env.reset()
-            ego_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][0]})
-            opponent_controller.reset(seed=seed, options={'vehicle_state': info['vehicle_state'][1]})
+            ego_controller.reset(seed=seed, options={'vehicle_state': info['ego']['vehicle_state']})
+            opponent_controller.reset(seed=seed, options={'vehicle_state': info['oppo']['vehicle_state']})
 
             # Add a small delay between episodes
             time.sleep(1)
