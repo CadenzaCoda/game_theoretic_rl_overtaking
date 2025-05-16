@@ -1,5 +1,6 @@
 import ray
 # Initialize Ray
+ray.init()
 import os
 import gymnasium as gym
 from gymnasium import spaces

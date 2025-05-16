@@ -1,6 +1,7 @@
 import time
 
 import ray
+ray.init()
 from pathlib import Path
 # Initialize Ray
 import os
@@ -132,10 +133,13 @@ algo = config.build()
 checkpoint_path = str((Path.home() / "ray_results/PPO_barc_multi_2025-05-06_22-34-34i16ynltr/checkpoint_step_200").resolve())
 algo.restore(checkpoint_path)
 
-for i in range(50):
+# for i in range(50):
+i = 0
+while True:
     print("Evaluation episode:", i+1)
     results = algo.evaluate()
-    time.sleep(10)
+    time.sleep(3)
+    i += 1
 
 print("Done")
 algo.stop()
