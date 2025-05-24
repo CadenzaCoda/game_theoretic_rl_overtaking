@@ -79,7 +79,7 @@ class RacingEnv(MultiAgentEnv):
         self.lap_no = [0, 0]
         self.last_lap_no = [0, 0]
 
-        observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 9,), dtype=np.float32)
+        observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 10,), dtype=np.float32)
 
         self.observation_space = spaces.Dict({
             'ego': observation_space,
@@ -238,8 +238,9 @@ class RacingEnv(MultiAgentEnv):
         self.last_state = copy.deepcopy(self.sim_state)
 
         self.t = self.t0
-        self.lap_no = [0, 0]
-        self.last_lap_no = [0, 0]
+        lap_no = np.random.randint(0, self.target_laps)
+        self.lap_no = [lap_no, lap_no]
+        self.last_lap_no = [lap_no, lap_no]
 
         self._reset_speed_stats()
         self.eps_len = 1
@@ -317,12 +318,12 @@ class RacingEnv(MultiAgentEnv):
 
     def _get_obs(self) -> Dict[str, np.ndarray]:
         ob = np.array([[state.v.v_long, state.v.v_tran, state.w.w_psi,
-                        (state.p.s + lap_no * self.track_obj.track_length) / (self.track_obj.track_length * self.target_laps), state.p.x_tran, state.p.e_psi,
-                        state.x.x, state.x.y, state.e.psi] for lap_no, state in zip(self.lap_no, self.sim_state)],
-                      dtype=np.float32).reshape(-1)
+                        state.p.s, state.p.x_tran, state.p.e_psi,
+                        state.x.x, state.x.y, state.e.psi, (state.p.s / self.track_obj.track_length + lap_no) / self.target_laps] for lap_no, state in zip(self.lap_no, self.sim_state)],
+                      dtype=np.float32)
         ob = {
-            "ego": ob,
-            "oppo": ob.copy()
+            "ego": ob.flatten(),
+            "oppo": ob[::-1].flatten()
         }
         return ob
 
@@ -351,6 +352,7 @@ class RacingEnv(MultiAgentEnv):
     def _get_reward(self) -> dict:
         # Check for draw condition first (including collision)
         if self._is_draw():
+            # logger.info(f"Draw! Ego average speed: {self._sum_eps_speed[0] / self.eps_len}, Oppo average speed: {self._sum_eps_speed[1] / self.eps_len}")
             return {"ego": 0.0, "oppo": 0.0}
 
         # Use cached results for success/failure
@@ -361,8 +363,10 @@ class RacingEnv(MultiAgentEnv):
 
         # Terminal rewards for success/failure
         if ego_success or oppo_failure:
+            # logger.info(f"Ego vehicle won! Ego average speed: {self._sum_eps_speed[0] / self.eps_len}, Oppo average speed: {self._sum_eps_speed[1] / self.eps_len}")
             return {"ego": 100.0, "oppo": -100.0}  # Ego wins
         elif oppo_success or ego_failure:
+            # logger.info(f"Oppo vehicle won! Ego average speed: {self._sum_eps_speed[0] / self.eps_len}, Oppo average speed: {self._sum_eps_speed[1] / self.eps_len}")
             return {"ego": -100.0, "oppo": 100.0}  # Oppo wins
 
         # Progress-based rewards (zero-sum)
@@ -371,23 +375,26 @@ class RacingEnv(MultiAgentEnv):
         k_speed = 0.2
 
         # Calculate progress for each vehicle
-        progress_ego = self.sim_state[0].p.s - self.last_state[0].p.s
-        progress_oppo = self.sim_state[1].p.s - self.last_state[1].p.s
+        is_new_lap = self._is_new_lap()
+        progress_ego = self.sim_state[0].p.s - self.last_state[0].p.s + self.track_obj.track_length if is_new_lap[0] else 0
+        progress_oppo = self.sim_state[1].p.s - self.last_state[1].p.s + self.track_obj.track_length if is_new_lap[1] else 0
 
         # Boundary penalties
         boundary_penalty_ego = -k_boundary * max(0, np.abs(self.sim_state[0].p.x_tran) / self.track_obj.half_width - 0.9)
         boundary_penalty_oppo = -k_boundary * max(0, np.abs(self.sim_state[1].p.x_tran) / self.track_obj.half_width - 0.9)
 
         # Speed penalties
-        speed_penalty_ego = -k_speed * max(0.0, 0.5 - self.sim_state[0].v.v_long)
-        speed_penalty_oppo = -k_speed * max(0.0, 0.5 - self.sim_state[1].v.v_long)
+        speed_penalty_ego = -k_speed * max(0.0, 1.0 - self.sim_state[0].v.v_long)
+        speed_penalty_oppo = -k_speed * max(0.0, 1.0 - self.sim_state[1].v.v_long)
 
-        # Calculate relative progress (zero-sum)
-        relative_progress = progress_ego - progress_oppo
+        # Calculate relative progress (zero-sum)  Note: Not used for now. 
+        # relative_progress = progress_ego - progress_oppo
 
         return {
-            "ego": k_progress * relative_progress + boundary_penalty_ego + speed_penalty_ego,
-            "oppo": -k_progress * relative_progress + boundary_penalty_oppo + speed_penalty_oppo
+            "ego": k_progress * progress_ego + boundary_penalty_ego + speed_penalty_ego,
+            "oppo": k_progress * progress_oppo + boundary_penalty_oppo + speed_penalty_oppo
+            # "ego": k_progress * relative_progress + boundary_penalty_ego + speed_penalty_ego,
+            # "oppo": -k_progress * relative_progress + boundary_penalty_oppo + speed_penalty_oppo
         }
 
     def _get_terminal(self) -> bool:
@@ -415,6 +422,9 @@ class RacingEnv(MultiAgentEnv):
                 'max_eps_speed': self.max_eps_speed[0],
                 'min_eps_speed': self.min_eps_speed[0],
                 'lap_time': self.eps_len * self.dt,
+                'success': self._cached_results['success'][0],
+                'failure': self._cached_results['failure'][0],
+                'collision': self._cached_results['collision'],
             },
             'oppo': {
                 'vehicle_state': self.sim_state[1],
@@ -423,5 +433,8 @@ class RacingEnv(MultiAgentEnv):
                 'max_eps_speed': self.max_eps_speed[1],
                 'min_eps_speed': self.min_eps_speed[1],
                 'lap_time': self.eps_len * self.dt,
+                'success': self._cached_results['success'][1],
+                'failure': self._cached_results['failure'][1],
+                'collision': self._cached_results['collision'],
             },
         } 
