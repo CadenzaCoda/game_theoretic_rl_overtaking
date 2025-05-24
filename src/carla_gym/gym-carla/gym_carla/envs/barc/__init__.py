@@ -18,3 +18,7 @@ register(
     id='barc-v2',
     entry_point='gym_carla.envs.barc.game_theoretic_env:GameTheoreticEnv',
 )
+register(
+    id='barc-laps-v1',
+    entry_point='gym_carla.envs.barc.racing_env:RacingEnv',
+)
