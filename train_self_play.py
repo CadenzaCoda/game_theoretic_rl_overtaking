@@ -11,7 +11,7 @@ import torch
 from ray.rllib.policy.policy import PolicySpec
 from ray.rllib.algorithms.algorithm import Algorithm
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
-from ray.rllib.evaluation.episode import Episode
+from ray.rllib.env.base_env import Episode
 from ray.rllib.evaluation.postprocessing import Postprocessing
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.typing import AgentID, PolicyID
