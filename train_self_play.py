@@ -67,7 +67,7 @@ def env_creator(config):
 register_env(name="barc_self_play", env_creator=env_creator)
 
 # Define observation and action spaces
-observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 9,), dtype=np.float32)
+observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(2 * 10,), dtype=np.float32)
 _action_bounds = np.tile(np.array([2, 0.45]), [2, 1])
 u_a_space = np.linspace(-2, 2, 32, endpoint=True, dtype=np.float32)
 u_steer_space = np.linspace(-0.45, 0.45, 32, endpoint=True, dtype=np.float32)

@@ -388,13 +388,13 @@ class RacingEnv(MultiAgentEnv):
         speed_penalty_oppo = -k_speed * max(0.0, 1.0 - self.sim_state[1].v.v_long)
 
         # Calculate relative progress (zero-sum)  Note: Not used for now. 
-        # relative_progress = progress_ego - progress_oppo
+        relative_progress = progress_ego - progress_oppo
 
         return {
-            "ego": k_progress * progress_ego + boundary_penalty_ego + speed_penalty_ego,
-            "oppo": k_progress * progress_oppo + boundary_penalty_oppo + speed_penalty_oppo
-            # "ego": k_progress * relative_progress + boundary_penalty_ego + speed_penalty_ego,
-            # "oppo": -k_progress * relative_progress + boundary_penalty_oppo + speed_penalty_oppo
+            # "ego": k_progress * progress_ego + boundary_penalty_ego + speed_penalty_ego,
+            # "oppo": k_progress * progress_oppo + boundary_penalty_oppo + speed_penalty_oppo
+            "ego": k_progress * relative_progress + boundary_penalty_ego + speed_penalty_ego,
+            "oppo": -k_progress * relative_progress + boundary_penalty_oppo + speed_penalty_oppo
         }
 
     def _get_terminal(self) -> bool:
@@ -413,7 +413,7 @@ class RacingEnv(MultiAgentEnv):
         """Episode is truncated if maximum time steps reached"""
         return self.eps_len > self.max_steps
 
-    def _get_info(self) -> Dict[str, Union[List[VehicleState], int, float]]:
+    def _get_info(self) -> Dict[str, Dict[str, Union[List[VehicleState], int, float, bool, List[bool]]]]:
         return {
             'ego': {
                 'vehicle_state': self.sim_state[0],
