@@ -4,6 +4,7 @@ import numpy as np
 from gym_carla.controllers.barc_mpcc_conv import MPCCConvWrapper
 from gym_carla.controllers.barc_lmpc import LMPCWrapper
 from gym_carla.controllers.barc_pid import PIDWrapper
+from gym_carla.controllers.barc_ltv_mpc import LTVMPCWrapper
 
 from loguru import logger
 
@@ -16,6 +17,7 @@ def main(controller: str, seed=0):
         'lmpc': LMPCWrapper,
         'mpcc-conv': MPCCConvWrapper,
         'pid': PIDWrapper,
+        'ltv-mpc': LTVMPCWrapper,
     }
     dt = 0.1
     dt_sim = 0.01
@@ -28,8 +30,8 @@ def main(controller: str, seed=0):
     # expert = LMPCWrapper(dt=dt, t0=t0,
     #                      track_obj=env.get_track())
     expert = controller_cls_mp[controller](dt=dt, t0=t0,
-                                           track_obj=env.get_track())
-    env.bind_controller(expert)
+                                           track_obj=env.unwrapped.get_track())
+    env.unwrapped.bind_controller(expert)
 
     ob, info = env.reset(seed=seed, options={'spawning': 'fixed'})
     expert.reset(seed=seed, options=info)
@@ -58,7 +60,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--controller', '-c', type=str,
-                        choices=['lmpc', 'mpcc-conv', 'pid'])
+                        choices=['lmpc', 'mpcc-conv', 'pid', 'ltv-mpc'])
     params = vars(parser.parse_args())
 
     main(**params)

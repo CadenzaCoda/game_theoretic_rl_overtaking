@@ -32,8 +32,8 @@ else:
 
 # Define a function to instantiate the environment
 
-NUM_TRAINING_STEPS = 3000
-CHECKPOINT_INTERVAL = 200
+NUM_TRAINING_STEPS = 10000
+CHECKPOINT_INTERVAL = 500
 
 def env_creator(config):
     print("Creating Environment")

@@ -96,9 +96,14 @@ class MultiBarcEnv(MultiAgentEnv):
 
         # Fixed action space for 2 vehicles
         self._action_bounds = np.tile(np.array([2, 0.45]), [2, 1])
+        # Add separate action bounds for opponent with more restricted ranges
+        self._opponent_action_bounds = np.array([1.0, 0.25])  # Reduced acceleration and steering ranges for opponent
         if self.discrete:
             self.u_a_space = np.linspace(-2, 2, 32, endpoint=True, dtype=np.float32)
             self.u_steer_space = np.linspace(-0.45, 0.45, 32, endpoint=True, dtype=np.float32)  # Note: The choices are fixed for now. (32x32)
+            # Create separate action spaces for opponent with more restricted ranges
+            self.opponent_u_a_space = np.linspace(-1.0, 1.0, 32, endpoint=True, dtype=np.float32)
+            self.opponent_u_steer_space = np.linspace(-0.25, 0.25, 32, endpoint=True, dtype=np.float32)
             action_space = spaces.MultiDiscrete([len(self.u_a_space), len(self.u_steer_space)])
         else:
             self.u_a_space = None
@@ -126,13 +131,19 @@ class MultiBarcEnv(MultiAgentEnv):
         if not self.discrete:
             raise ValueError
         # assert action.shape == (2, 2)
-        return np.array([(self.u_a_space[_action[0]], self.u_steer_space[_action[1]]) for _action in action])
+        # Use different action spaces for ego and opponent
+        ego_action = (self.u_a_space[action[0, 0]], self.u_steer_space[action[0, 1]])
+        oppo_action = (self.opponent_u_a_space[action[1, 0]], self.opponent_u_steer_space[action[1, 1]])
+        return np.array([ego_action, oppo_action])
 
     def bind_controller(self, controller):
         self.visualizer.bind_controller(controller)
 
     def clip_action(self, action):
-        return np.clip(action, -self._action_bounds, self._action_bounds)
+        # Apply different clipping bounds for ego and opponent
+        clipped_ego = np.clip(action[0], -self._action_bounds[0], self._action_bounds[0])
+        clipped_oppo = np.clip(action[1], -self._opponent_action_bounds, self._opponent_action_bounds)
+        return np.array([clipped_ego, clipped_oppo])
 
     def _is_new_lap(self) -> List[bool]:
         def orientation(p, q, r):

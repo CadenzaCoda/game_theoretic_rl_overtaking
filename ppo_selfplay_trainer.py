@@ -722,7 +722,7 @@ if __name__ == "__main__":
     if params.evaluation:
         trainer.load_model('ppo_selfplay_model_1000_barc-laps-v1_ppo-selfplay.pt')
         scoreboard = Scoreboard()
-        for _ in range(1):
+        for _ in range(25):
             info = trainer.evaluate_agent()
             scoreboard.log_result(info)
         logger.info(scoreboard)
